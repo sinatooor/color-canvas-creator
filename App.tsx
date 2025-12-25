@@ -269,7 +269,7 @@ const App: React.FC = () => {
           </div>
           <h1 className="text-3xl font-extrabold text-gray-800 mb-4 tracking-tight">Unlock Pro Mode</h1>
           <p className="text-gray-600 mb-8 leading-relaxed">
-            Colorify AI uses the state-of-the-art <b>Gemini 3 Pro</b> model to generate stunning 2K vector art. Please provide a key to start creating.
+            FifoColor.AI uses the state-of-the-art <b>Gemini 3 Pro</b> model to generate stunning 2K vector art. Please provide a key to start creating.
           </p>
           <button 
             onClick={handleSelectKey}
@@ -322,7 +322,7 @@ const App: React.FC = () => {
           </div>
           <div className="flex flex-col">
             <h1 className="text-2xl md:text-3xl font-black text-gray-800 tracking-tight leading-none">
-              Colorify<span className="text-purple-600">.AI</span>
+              FifoColor<span className="text-purple-600">.AI</span>
             </h1>
             <span className="text-xs font-bold text-gray-400 tracking-[0.2em] uppercase mt-1">Vector Studio</span>
           </div>

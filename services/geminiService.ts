@@ -28,11 +28,10 @@ export async function transformToIllustration(
   };
 
   // --- COMPLEXITY CONFIGURATION ---
-  // Lower percentage = Smaller regions = Higher complexity
   const complexityConfig: Record<ComplexityLevel, { max: string, min: string }> = {
-    low: { max: "5%", min: "1%" },      // Big chunks, easy to color
-    medium: { max: "2%", min: "0.3%" }, // Standard
-    high: { max: "0.5%", min: "0.1%" }  // Tiny details, hard
+    low: { max: "5%", min: "1%" },      
+    medium: { max: "2%", min: "0.3%" }, 
+    high: { max: "0.5%", min: "0.1%" }  
   };
 
   const selectedStyle = stylePrompts[style];
@@ -57,17 +56,18 @@ export async function transformToIllustration(
           ${selectedStyle}
           
           STRICT VISUAL REQUIREMENTS:
-          1. **Pre-Colored**: The output must be FULLY COLORED with flat, solid colors (no gradients, no shading).
-          2. **Black Outlines**: Every single color region must be separated by a BOLD, PURE BLACK (#000000) stroke. The lines must be continuous and closed.
-          3. **NO TEXTURE**: Do not use stippling, hatching, cross-hatching, or noise. Lines must be solid ink.
+          1. **Pre-Colored**: The output must be FULLY COLORED with flat, solid colors.
+          2. **Black Outlines**: Every single color region must be separated by a BOLD, PURE BLACK (#000000) stroke.
+          3. **NO TEXTURE**: Do not use stippling, hatching, cross-hatching, or noise.
           4. **Segmentation Rules**: 
              - Divide the image into distinct cells.
              - **Max Region Size**: No single region should be larger than ${selectedComplexity.max} of the canvas.
-             - **Min Region Size**: No region should be smaller than ${selectedComplexity.min} (avoid noise).
-          5. **Color Palette**: Limit the design to approximately 32-64 distinct, vibrant colors.
+             - **Min Region Size**: No region should be smaller than ${selectedComplexity.min}.
+          5. **Color Palette**: Limit to 32-64 distinct colors.
+             **CRITICAL**: DO NOT USE DARK COLORS. All fill colors MUST have a luminance greater than 30%. Dark Brown, Dark Navy, Black, etc., are STRICTLY FORBIDDEN for fills. Use lighter, pastel, or vibrant variations instead. The only dark element in the image should be the outlines.
           6. **Resolution**: 2K resolution.
           
-          The result should look like a professional coloring page template.
+          The result should look like a professional coloring page template where the lines are clearly distinguishable from the fill colors.
           `,
         },
       ],

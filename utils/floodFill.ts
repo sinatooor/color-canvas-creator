@@ -13,9 +13,8 @@ export function floodFill(
 
   // --- IMMUTABLE LINES CHECK ---
   // If the user clicks on a dark pixel (the vector lines), do not fill.
-  // We use a strict threshold (approx 6% brightness) to match the binarization logic.
-  // This allows painting on dark colors that aren't pure black outlines.
-  if (targetColor[0] < 15 && targetColor[1] < 15 && targetColor[2] < 15) {
+  // Updated threshold to 20 to match vectorize/imageProcessing logic.
+  if (targetColor[0] < 20 && targetColor[1] < 20 && targetColor[2] < 20) {
     return false; // Action blocked: Cannot color the lines
   }
 
@@ -34,7 +33,7 @@ export function floodFill(
   while (stack.length > 0) {
     const [x, y] = stack.pop()!;
     
-    // Bounds check already handled by valid push, but double check start
+    // Bounds check
     if (x < 0 || x >= canvas.width || y < 0 || y >= canvas.height) continue;
     
     const idx = y * canvas.width + x;
@@ -79,7 +78,7 @@ function colorsMatch(c1: number[], c2: number[], threshold: number = 0) {
   );
 }
 
-function hexToRgb(hex: string): number[] {
+export function hexToRgb(hex: string): number[] {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);

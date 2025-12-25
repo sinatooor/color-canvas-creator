@@ -2,9 +2,9 @@
 import { User, SavedProject } from '../types';
 
 // Keys for localStorage
-const USERS_KEY = 'colorify_users';
-const PROJECTS_KEY = 'colorify_projects';
-const CURRENT_USER_KEY = 'colorify_current_user_id';
+const USERS_KEY = 'fifocolor_users';
+const PROJECTS_KEY = 'fifocolor_projects';
+const CURRENT_USER_KEY = 'fifocolor_current_user_id';
 
 // Internal type for storage including password
 interface StoredUser extends User {

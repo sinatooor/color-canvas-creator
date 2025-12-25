@@ -54,7 +54,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLoginSuccess }
         <div className="p-8">
           <div className="text-center mb-8">
             <h2 className="text-3xl font-black text-gray-800 mb-2">
-              {isLogin ? 'Welcome Back' : 'Join Colorify'}
+              {isLogin ? 'Welcome Back' : 'Join FifoColor.AI'}
             </h2>
             <p className="text-gray-500">
               {isLogin ? 'Sign in to access your gallery' : 'Create an account to save your art'}

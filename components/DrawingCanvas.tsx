@@ -1,6 +1,6 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { floodFill } from '../utils/floodFill';
+import { floodFill, hexToRgb } from '../utils/floodFill';
 import { binarizeImageData, generateHints, cleanupArtifacts, checkProgress } from '../utils/imageProcessing';
 import { DrawingAction, Hint, Color } from '../types';
 import { MAX_UNDO_STEPS } from '../constants';
@@ -32,16 +32,19 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const referenceDataRef = useRef<ImageData | null>(null); // Stores the "Answer Key"
+
   const [history, setHistory] = useState<DrawingAction[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [hints, setHints] = useState<Hint[]>([]);
-  const [ripples, setRipples] = useState<{x: number, y: number, id: number}[]>([]);
+  const [ripples, setRipples] = useState<{x: number, y: number, id: number, color: string}[]>([]);
   const [showPreview, setShowPreview] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
   
   // Transform state
   const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
   const [mode, setMode] = useState<'paint' | 'move'>('paint');
+  const [isSafeMode, setIsSafeMode] = useState(false); // Magic Shield Toggle
 
   // Gesture state
   const evCache = useRef<React.PointerEvent[]>([]);
@@ -49,12 +52,17 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const isDragging = useRef(false);
   const lastPoint = useRef<{x: number, y: number} | null>(null);
   
+  // Undo Gesture State (Two-finger tap)
+  const gestureStartTime = useRef<number>(0);
+  const maxTouchesDetected = useRef<number>(0);
+  const gestureDidMove = useRef<boolean>(false);
+  
   // Long press for preview
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isLongPress = useRef(false);
   const startPointerPos = useRef<{x: number, y: number} | null>(null);
 
-  // Initialize
+  // Initialize Canvas
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -63,7 +71,6 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    // If we have a saved state, load that. Otherwise load the base vector image.
     img.src = initialStateUrl || imageUrl;
     
     img.onload = () => {
@@ -72,21 +79,21 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       
       ctx.drawImage(img, 0, 0);
       
-      // Clean up the image:
-      // 1. Get raw data
-      const rawData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      // 2. Binarize (Strict B&W)
-      const binaryData = binarizeImageData(rawData);
-      // 3. Despeckle (Remove noise/artifacts)
-      const cleanData = cleanupArtifacts(binaryData);
+      let initialData: ImageData;
+
+      if (!initialStateUrl) {
+          const rawData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const binaryData = binarizeImageData(rawData, 90); 
+          initialData = cleanupArtifacts(binaryData);
+          ctx.putImageData(initialData, 0, 0);
+      } else {
+          initialData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      }
       
-      ctx.putImageData(cleanData, 0, 0);
-      
-      setHistory([{ imageData: cleanData }]);
+      setHistory([{ imageData: initialData }]);
       setHistoryIndex(0);
       setIsCompleted(false);
 
-      // Fit to screen
       if (containerRef.current) {
         const container = containerRef.current;
         const scaleX = container.clientWidth / img.width;
@@ -98,26 +105,43 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         setTransform({ scale: initialScale, x, y });
       }
 
-      // Generate Hints Async using the provided palette
       onProcessingHints(true);
       setTimeout(() => {
-        const generatedHints = generateHints(cleanData, palette);
+        const generatedHints = generateHints(initialData, palette);
         setHints(generatedHints);
         onProcessingHints(false);
       }, 300);
     };
   }, [imageUrl, initialStateUrl, palette]);
 
+  // Load Reference Image for Safe Mode
+  useEffect(() => {
+    if (!coloredIllustrationUrl) return;
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = coloredIllustrationUrl;
+    img.onload = () => {
+        const refCanvas = document.createElement('canvas');
+        refCanvas.width = img.width;
+        refCanvas.height = img.height;
+        const ctx = refCanvas.getContext('2d');
+        if (ctx) {
+            ctx.drawImage(img, 0, 0);
+            referenceDataRef.current = ctx.getImageData(0, 0, img.width, img.height);
+        }
+    };
+  }, [coloredIllustrationUrl]);
+
   // Auto-save Interval
   useEffect(() => {
     if (!onAutoSave) return;
-
     const intervalId = setInterval(() => {
       if (canvasRef.current && historyIndex >= 0 && !isCompleted) {
         const dataUrl = canvasRef.current.toDataURL('image/png');
         onAutoSave(dataUrl);
       }
-    }, 10000); // 10 seconds
+    }, 10000); 
 
     return () => clearInterval(intervalId);
   }, [onAutoSave, historyIndex, isCompleted]);
@@ -138,7 +162,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     setHistoryIndex(newHistory.length - 1);
   }, [history, historyIndex]);
 
-  const undo = () => {
+  const undo = useCallback(() => {
     if (historyIndex > 0) {
       const newIndex = historyIndex - 1;
       const canvas = canvasRef.current;
@@ -148,9 +172,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         setHistoryIndex(newIndex);
       }
     }
-  };
-
-  // --- Interaction Handlers ---
+  }, [historyIndex, history]);
 
   const checkAndHandleCompletion = (ctx: CanvasRenderingContext2D) => {
     if (isCompleted || !onCompletion) return;
@@ -160,16 +182,15 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     
     if (done) {
         setIsCompleted(true);
-        // Delay slightly for effect
         setTimeout(() => {
             onCompletion(ctx.canvas.toDataURL('image/png'));
         }, 500);
     }
   };
 
-  const addRipple = (x: number, y: number) => {
+  const addRipple = (x: number, y: number, color: string) => {
     const id = Date.now();
-    setRipples(prev => [...prev, { x, y, id }]);
+    setRipples(prev => [...prev, { x, y, id, color }]);
     setTimeout(() => setRipples(prev => prev.filter(r => r.id !== id)), 600);
   };
 
@@ -194,20 +215,31 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     canvasRef.current?.setPointerCapture(e.pointerId);
     startPointerPos.current = { x: e.clientX, y: e.clientY };
 
-    // Cancel long press if multi-touch
-    if (evCache.current.length === 2) {
-      if (longPressTimer.current) clearTimeout(longPressTimer.current);
-      setMode('move'); 
-      return;
+    if (evCache.current.length === 1) {
+        gestureStartTime.current = Date.now();
+        maxTouchesDetected.current = 1;
+        gestureDidMove.current = false;
+    } else {
+        maxTouchesDetected.current = Math.max(maxTouchesDetected.current, evCache.current.length);
     }
 
-    if (mode === 'move' || e.button === 1 || e.shiftKey) {
+    const isPen = e.pointerType === 'pen';
+    const isMultiTouch = evCache.current.length > 1;
+
+    let effectiveMode = mode;
+    if (isPen) effectiveMode = 'paint'; 
+    if (isMultiTouch) effectiveMode = 'move';
+
+    if (isMultiTouch) {
+      if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    }
+
+    if (effectiveMode === 'move' || e.button === 1 || e.shiftKey) {
       isDragging.current = true;
       lastPoint.current = { x: e.clientX, y: e.clientY };
       return;
     }
 
-    // Start Long Press Timer (1 second)
     isLongPress.current = false;
     longPressTimer.current = setTimeout(() => {
       isLongPress.current = true;
@@ -221,11 +253,11 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       evCache.current[index] = e;
     }
 
-    // Cancel long press if moved significantly
-    if (startPointerPos.current && !isLongPress.current) {
+    if (startPointerPos.current) {
         const dist = Math.hypot(e.clientX - startPointerPos.current.x, e.clientY - startPointerPos.current.y);
         if (dist > 10) {
              if (longPressTimer.current) clearTimeout(longPressTimer.current);
+             if (dist > 20) gestureDidMove.current = true; 
         }
     }
 
@@ -265,8 +297,17 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const handlePointerUp = (e: React.PointerEvent) => {
     if (longPressTimer.current) clearTimeout(longPressTimer.current);
     
-    // Check if pointer is active (was down)
     const isTracked = evCache.current.some(ev => ev.pointerId === e.pointerId);
+
+    if (evCache.current.length === 2) { 
+        const duration = Date.now() - gestureStartTime.current;
+        if (maxTouchesDetected.current === 2 && duration < 300 && !gestureDidMove.current) {
+            undo();
+            addRipple(e.clientX - containerRef.current!.getBoundingClientRect().left, e.clientY - containerRef.current!.getBoundingClientRect().top, 'gray');
+            cleanupPointer(e.pointerId);
+            return;
+        }
+    }
 
     if (isLongPress.current) {
       setShowPreview(false);
@@ -275,8 +316,10 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       return;
     }
 
-    // Normal paint logic if we weren't dragging/pinching and it was a tracked pointer
-    if (isTracked && !isDragging.current && evCache.current.length < 2) {
+    const isPen = e.pointerType === 'pen';
+    const shouldPaint = (mode === 'paint' || isPen) && !isDragging.current && evCache.current.length < 2 && isTracked;
+
+    if (shouldPaint) {
         const canvas = canvasRef.current;
         if (canvas) {
             const ctx = canvas.getContext('2d');
@@ -285,7 +328,6 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                 const x = (e.clientX - rect.left) * (canvas.width / rect.width);
                 const y = (e.clientY - rect.top) * (canvas.height / rect.height);
 
-                // Hint Check
                 let hintClicked = false;
                 if (transform.scale > 1.5) {
                     const clickRadius = 20 / transform.scale; 
@@ -298,17 +340,48 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                     }
                 }
 
-                // Flood Fill
                 if (!hintClicked) {
-                    const colorToUse = isEraser ? '#FFFFFF' : selectedColor;
-                    const didPaint = floodFill(ctx, Math.round(x), Math.round(y), colorToUse);
-                    if (didPaint) {
-                        saveToHistory();
-                        addRipple(e.clientX - containerRef.current!.getBoundingClientRect().left, e.clientY - containerRef.current!.getBoundingClientRect().top);
+                    const ix = Math.round(x);
+                    const iy = Math.round(y);
+                    
+                    // --- SAFE MODE CHECK ---
+                    let allowFill = true;
+                    if (isSafeMode && !isEraser && referenceDataRef.current) {
+                        const refData = referenceDataRef.current.data;
+                        const idx = (iy * referenceDataRef.current.width + ix) * 4;
                         
-                        // Check completion if we are not erasing
-                        if (!isEraser && hints.length > 0) {
-                            checkAndHandleCompletion(ctx);
+                        // Reference pixel color
+                        const refR = refData[idx];
+                        const refG = refData[idx+1];
+                        const refB = refData[idx+2];
+                        
+                        // Selected color
+                        const [selR, selG, selB] = hexToRgb(selectedColor);
+                        
+                        // Calculate difference (Euclidean distance approximation)
+                        // Tolerance covers jpeg compression artifacts and palette quantization
+                        const diff = Math.abs(refR - selR) + Math.abs(refG - selG) + Math.abs(refB - selB);
+                        
+                        // Threshold of 60 allows for slight variations but blocks distinct colors
+                        if (diff > 60) {
+                            allowFill = false;
+                        }
+                    }
+
+                    if (!allowFill) {
+                        // REJECT: Wrong color
+                        addRipple(e.clientX - containerRef.current!.getBoundingClientRect().left, e.clientY - containerRef.current!.getBoundingClientRect().top, '#ef4444'); // Red
+                    } else {
+                        // ALLOW
+                        const colorToUse = isEraser ? '#FFFFFF' : selectedColor;
+                        const didPaint = floodFill(ctx, ix, iy, colorToUse);
+                        if (didPaint) {
+                            saveToHistory();
+                            addRipple(e.clientX - containerRef.current!.getBoundingClientRect().left, e.clientY - containerRef.current!.getBoundingClientRect().top, isEraser ? 'gray' : selectedColor);
+                            
+                            if (!isEraser && hints.length > 0) {
+                                checkAndHandleCompletion(ctx);
+                            }
                         }
                     }
                 }
@@ -323,14 +396,14 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       if (longPressTimer.current) clearTimeout(longPressTimer.current);
       if (showPreview) setShowPreview(false);
       isLongPress.current = false;
-      cleanupPointer(e.pointerId); // Just cleanup, never paint on leave
+      cleanupPointer(e.pointerId); 
   }
 
   const download = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const link = document.createElement('a');
-    link.download = 'colorify-masterpiece.png';
+    link.download = 'fifocolor-masterpiece.png';
     link.href = canvas.toDataURL('image/png');
     link.click();
   };
@@ -350,7 +423,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   return (
     <div className="flex flex-col items-center gap-4 w-full">
       {/* Floating Controls */}
-      <div className="glass-panel rounded-full px-4 py-2 flex items-center gap-4 shadow-lg mb-2 z-10">
+      <div className="glass-panel rounded-full px-4 py-2 flex items-center gap-4 shadow-lg mb-2 z-10 flex-wrap justify-center">
         <div className="flex bg-gray-100 rounded-full p-1">
           <button
             onClick={() => setMode('paint')}
@@ -370,6 +443,20 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             <i className="fa-solid fa-up-down-left-right mr-2"></i> Move
           </button>
         </div>
+
+        {/* Magic Shield / Safe Mode Toggle */}
+        <button
+            onClick={() => setIsSafeMode(!isSafeMode)}
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-sm font-bold transition-all border ${
+                isSafeMode 
+                ? 'bg-green-100 text-green-700 border-green-200 shadow-inner' 
+                : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+            }`}
+            title="Safe Mode: Prevents using the wrong color"
+        >
+            <i className={`fa-solid ${isSafeMode ? 'fa-shield-halved' : 'fa-shield'}`}></i>
+            <span className="hidden sm:inline">Safe Mode</span>
+        </button>
 
         <div className="w-px h-6 bg-gray-300"></div>
 
@@ -428,7 +515,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             onPointerUp={handlePointerUp}
             onPointerLeave={handlePointerLeave}
             className="shadow-2xl bg-white"
-            style={{ imageRendering: 'pixelated' }} 
+            style={{ imageRendering: 'pixelated', touchAction: 'none' }} 
           />
           
           {/* Magic Hints Overlay */}
@@ -460,20 +547,28 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         {ripples.map(r => (
             <div 
                 key={r.id}
-                className="absolute rounded-full border-2 border-white pointer-events-none animate-ping"
+                className={`absolute rounded-full border-2 pointer-events-none ${r.color === '#ef4444' ? 'animate-bounce' : 'animate-ping'}`}
                 style={{
                     left: r.x,
                     top: r.y,
                     width: '40px',
                     height: '40px',
                     transform: 'translate(-50%, -50%)',
-                    borderColor: isEraser ? 'gray' : selectedColor,
+                    borderColor: r.color,
+                    borderWidth: r.color === '#ef4444' ? '4px' : '2px', // Thicker border for error
                     opacity: 0.8
                 }}
-            />
+            >
+                {/* Add an X icon if it is an error ripple */}
+                {r.color === '#ef4444' && (
+                    <div className="absolute inset-0 flex items-center justify-center text-red-500 text-lg">
+                        <i className="fa-solid fa-xmark"></i>
+                    </div>
+                )}
+            </div>
         ))}
         
-        {/* Preview Indicator / Instruction */}
+        {/* Preview Indicator */}
         {isLongPress.current && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/60 text-white px-4 py-2 rounded-full backdrop-blur-sm text-sm font-bold animate-pulse pointer-events-none">
                 Preview Mode
@@ -487,7 +582,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           disabled={historyIndex <= 0}
           className="glass-panel px-8 py-3 rounded-full font-bold text-gray-600 hover:text-gray-800 disabled:opacity-50 transition-all active:scale-95 flex items-center gap-2"
         >
-          <i className="fa-solid fa-rotate-left"></i> Undo
+          <i className="fa-solid fa-rotate-left"></i> Undo <span className="text-xs font-normal opacity-70 hidden md:inline">(2-finger tap)</span>
         </button>
         <button 
           onClick={download}
