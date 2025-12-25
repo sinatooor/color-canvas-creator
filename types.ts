@@ -53,6 +53,7 @@ export interface TimelapseFrame {
   x: number;
   y: number;
   color: string;
+  pathIndex?: number;
 }
 
 export interface SavedProject {

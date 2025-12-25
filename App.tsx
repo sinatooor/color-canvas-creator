@@ -48,10 +48,14 @@ const App: React.FC = () => {
 
   // Editor State
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  // Note: 'illustrationUrl' now stores the REGIONS SVG URL for clicking
   const [illustrationUrl, setIllustrationUrl] = useState<string | null>(null);
+  // New: 'outlinesUrl' stores the Black Lines Overlay
+  const [outlinesUrl, setOutlinesUrl] = useState<string | undefined>(undefined);
+  
   const [initialStateUrl, setInitialStateUrl] = useState<string | undefined>(undefined);
   const [coloredIllustrationUrl, setColoredIllustrationUrl] = useState<string | null>(null);
-  const [originalImageUrl, setOriginalImageUrl] = useState<string | null>(null); // Keep track for saving
+  const [originalImageUrl, setOriginalImageUrl] = useState<string | null>(null); 
   const [selectedColor, setSelectedColor] = useState('#3b82f6');
   const [palette, setPalette] = useState<Color[]>(DEFAULT_PALETTE);
   const [isEraser, setIsEraser] = useState(false);
@@ -117,7 +121,7 @@ const App: React.FC = () => {
   const processImage = async (base64: string) => {
     setState('processing');
     setError(null);
-    setCurrentProjectId(null); // Reset project ID for new generation
+    setCurrentProjectId(null); 
     setInitialStateUrl(undefined);
     setCurrentTimelapse(undefined);
 
@@ -146,10 +150,13 @@ const App: React.FC = () => {
         setSelectedColor(extractedPalette[0].hex);
       }
 
-      setStatusMessage('Vectorizing Lines...');
-      const vectorizedIllustration = await vectorizeImage(coloredIllustration);
+      setStatusMessage('Vectorizing Lines & Regions...');
+      // New Vectorization returns both Outlines (Lines) and Regions (Fillable Shapes)
+      const { regions, outlines } = await vectorizeImage(coloredIllustration);
       
-      setIllustrationUrl(vectorizedIllustration);
+      setIllustrationUrl(regions);
+      setOutlinesUrl(outlines);
+      
       setState('coloring');
     } catch (err: any) {
       const msg = err instanceof Error ? err.message : 'Something went wrong.';
@@ -195,6 +202,7 @@ const App: React.FC = () => {
   const reset = () => {
     setState('idle');
     setIllustrationUrl(null);
+    setOutlinesUrl(undefined);
     setColoredIllustrationUrl(null);
     setInitialStateUrl(undefined);
     setOriginalImageUrl(null);
@@ -212,7 +220,7 @@ const App: React.FC = () => {
     setIllustrationUrl(project.vectorUrl);
     setInitialStateUrl(project.currentStateUrl);
     setPalette(project.palette);
-    setCurrentTimelapse(project.timelapseLog); // Load previous timelapse
+    setCurrentTimelapse(project.timelapseLog); 
     setState('coloring');
     setShowGallery(false);
   };
@@ -222,19 +230,17 @@ const App: React.FC = () => {
 
     try {
       if (currentProjectId) {
-        // Update existing project
         await storageService.updateProject(currentProjectId, {
           currentStateUrl: currentImageDataUrl,
           thumbnailUrl: coloredIllustrationUrl, 
           timelapseLog
         });
       } else {
-        // Create new project if not exists
         const newProject = await storageService.saveProject({
           userId: user.id,
           name: `Artwork ${new Date().toLocaleString()}`,
           thumbnailUrl: coloredIllustrationUrl,
-          vectorUrl: illustrationUrl,
+          vectorUrl: illustrationUrl, // Saving the Regions SVG url here
           currentStateUrl: currentImageDataUrl,
           originalUrl: originalImageUrl || '',
           palette: palette,
@@ -267,7 +273,6 @@ const App: React.FC = () => {
 
   // --- Render ---
 
-  // API Key Gate
   if (!hasApiKey) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 bg-slate-50">
@@ -293,7 +298,6 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen flex flex-col items-center p-4 md:p-8 relative">
       
-      {/* Modals */}
       <AuthModal 
         isOpen={showAuth} 
         onClose={() => setShowAuth(false)} 
@@ -321,7 +325,7 @@ const App: React.FC = () => {
         onClose={() => { setShowCompletion(false); setState('idle'); }}
         thumbnailUrl={finalImage}
         timelapseLog={finalTimelapse}
-        baseVectorUrl={illustrationUrl || ''}
+        baseVectorUrl={outlinesUrl || illustrationUrl || ''} 
       />
 
       {/* Top Bar */}
@@ -402,7 +406,7 @@ const App: React.FC = () => {
           <div className="flex flex-col items-center gap-8 md:gap-12 animate-in fade-in slide-in-from-bottom-8 duration-700 w-full">
             <div className="text-center max-w-2xl">
               <span className="px-4 py-1.5 rounded-full bg-blue-50 text-blue-600 text-xs font-bold uppercase tracking-wider mb-6 inline-block">
-                v3.2 - Auto-Save & Resume
+                v4.0 - True Vector Engine
               </span>
               <h2 className="text-5xl md:text-6xl font-black text-gray-800 mb-6 leading-[1.1]">
                 Turn Memories into <br/>
@@ -411,7 +415,6 @@ const App: React.FC = () => {
                 </span>
               </h2>
               
-              {/* Settings Trigger */}
               <button 
                 onClick={() => setShowSettings(true)}
                 className="group flex items-center justify-center gap-3 mx-auto mb-8 px-6 py-3 bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-md hover:border-blue-300 transition-all"
@@ -578,10 +581,8 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Cloud Save Button */}
                 {user && (
                     <div className="mt-4 flex flex-col gap-2">
-                       {/* Auto Save Status Indicator */}
                        {currentProjectId && (
                           <div className="text-center text-xs font-semibold text-gray-400 mb-1 flex items-center justify-center gap-2">
                              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> Auto-save active
@@ -605,7 +606,6 @@ const App: React.FC = () => {
                 )}
               </div>
 
-              {/* Status Card */}
               {processingHints ? (
                   <div className="bg-white p-6 rounded-[2rem] shadow-lg border border-gray-100 flex items-center gap-4 animate-pulse">
                       <div className="w-10 h-10 rounded-full border-4 border-blue-100 border-t-blue-500 animate-spin"></div>
@@ -630,7 +630,8 @@ const App: React.FC = () => {
             {/* Main Canvas Area */}
             <div className="flex-grow w-full order-1 lg:order-2">
               <DrawingCanvas 
-                imageUrl={illustrationUrl} 
+                imageUrl={illustrationUrl}
+                outlinesUrl={outlinesUrl} // New Overlay
                 initialStateUrl={initialStateUrl}
                 coloredIllustrationUrl={coloredIllustrationUrl}
                 selectedColor={selectedColor} 
