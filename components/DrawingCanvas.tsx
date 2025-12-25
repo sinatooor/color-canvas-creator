@@ -109,23 +109,33 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         
         // Inject styles
         const style = doc.createElementNS('http://www.w3.org/2000/svg', 'style');
-        style.textContent = `path, polygon, rect { fill: #ffffff; stroke: none; vector-effect: non-scaling-stroke; cursor: pointer; }`;
+        style.textContent = `
+            path, polygon, rect { 
+                fill: #ffffff; 
+                stroke: none; 
+                vector-effect: non-scaling-stroke; 
+                cursor: pointer;
+                pointer-events: all; /* Ensure clickability */
+            }
+        `;
         svg.prepend(style);
 
         // Split Compound Paths for Individual Coloring
         const paths = Array.from(svg.querySelectorAll('path'));
         paths.forEach(p => {
             const d = p.getAttribute('d');
-            // If path contains multiple Move commands, it likely has disjoint subpaths
+            // Check if path contains multiple 'M' or 'm' commands indicating subpaths
             if (d && (d.match(/[mM]/g) || []).length > 1) {
-                // Split by 'z' or 'Z' (close path) followed by 'm' or 'M'
-                // This regex finds segments that start with m/M and end with z/Z
-                const subPaths = d.match(/([mM][^zZ]*[zZ])/g);
-                if (subPaths && subPaths.length > 0) {
-                    subPaths.forEach(sp => {
+                // Robust split: Split on 'M' or 'm' but keep the delimiter
+                // We use a positive lookahead regex to split BEFORE each Move command
+                const subPathStrings = d.split(/(?=[mM])/).filter(s => s.trim().length > 0);
+                
+                if (subPathStrings.length > 1) {
+                    const parent = p.parentNode;
+                    subPathStrings.forEach(sp => {
                         const newP = doc.createElementNS('http://www.w3.org/2000/svg', 'path');
-                        newP.setAttribute('d', sp);
-                        p.parentNode?.insertBefore(newP, p);
+                        newP.setAttribute('d', sp.trim());
+                        parent?.insertBefore(newP, p);
                     });
                     p.remove();
                 }
@@ -199,7 +209,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       });
   }, [fills, svgContent]);
 
-  // History & Save Actions (unchanged logic, just ensuring function stability)
+  // History & Save Actions
   const saveToHistory = useCallback((newFills: Record<number, string>) => {
       const newHistory = history.slice(0, historyIndex + 1);
       if (newHistory.length >= MAX_UNDO_STEPS) newHistory.shift();
@@ -279,11 +289,9 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         maxTouchesDetected.current = Math.max(maxTouchesDetected.current, evCache.current.length);
     }
 
-    // Determine mode
     const isPen = e.pointerType === 'pen';
     const isMultiTouch = evCache.current.length > 1;
 
-    // Auto-switch to move if using 2 fingers
     if (isMultiTouch) {
       if (longPressTimer.current) clearTimeout(longPressTimer.current);
     }
@@ -294,12 +302,11 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       return;
     }
 
-    // Setup Long Press for Preview
     isLongPress.current = false;
     longPressTimer.current = setTimeout(() => {
       isLongPress.current = true;
       setShowPreview(true);
-    }, 600); // 600ms long press
+    }, 600);
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
@@ -308,13 +315,12 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     if (startPointerPos.current) {
         const dist = Math.hypot(e.clientX - startPointerPos.current.x, e.clientY - startPointerPos.current.y);
-        if (dist > 8) { // Threshold for "drag" vs "click"
+        if (dist > 8) {
              if (longPressTimer.current) clearTimeout(longPressTimer.current);
              if (dist > 15) gestureDidMove.current = true; 
         }
     }
 
-    // Pinch Zoom
     if (evCache.current.length === 2) {
       const curDiff = Math.hypot(
         evCache.current[0].clientX - evCache.current[1].clientX,
@@ -331,7 +337,6 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       return;
     }
 
-    // Pan
     if (isDragging.current && lastPoint.current) {
       const deltaX = e.clientX - lastPoint.current.x;
       const deltaY = e.clientY - lastPoint.current.y;
@@ -344,7 +349,6 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (longPressTimer.current) clearTimeout(longPressTimer.current);
     const isTracked = evCache.current.some(ev => ev.pointerId === e.pointerId);
 
-    // Two finger tap undo
     if (evCache.current.length === 2 && maxTouchesDetected.current === 2 && !gestureDidMove.current) {
         undo();
         addRipple(e.clientX, e.clientY, 'gray');
@@ -354,27 +358,22 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       setShowPreview(false);
       isLongPress.current = false;
     } else {
-        // Handle Click / Paint
         const isPen = e.pointerType === 'pen';
         const isClick = !isDragging.current && !gestureDidMove.current && evCache.current.length < 2 && isTracked;
         const shouldPaint = (mode === 'paint' || isPen) && isClick;
         
         if (shouldPaint) {
-            // Hide Overlays
+            // Temporarily hide overlays to perform hit test on SVG elements
             const overlay = document.getElementById('outline-overlay');
             if (overlay) overlay.style.display = 'none';
             const preview = document.getElementById('preview-overlay');
             if (preview) preview.style.display = 'none';
             
-            // Hit Test
             const target = document.elementFromPoint(e.clientX, e.clientY);
             
-            // Restore Overlays
             if (overlay) overlay.style.display = 'block';
             if (preview) preview.style.display = (showPreview ? 'block' : 'none');
 
-            // Logic: Check if we hit a path
-            // Note: SVG paths inside svgContainerRef
             if (target && target.tagName.toLowerCase() === 'path' && svgContainerRef.current?.contains(target)) {
                 const paths = Array.from(svgContainerRef.current.querySelectorAll('path'));
                 const pathIndex = paths.indexOf(target as SVGPathElement);
@@ -389,7 +388,10 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                     addRipple(e.clientX, e.clientY, isEraser ? 'gray' : selectedColor);
                     timelapseLog.current.push({ x: 0, y: 0, pathIndex, color: colorToUse });
 
-                    if (!isEraser && Object.keys(newFills).length > paths.length * 0.95) {
+                    // Improved Completion Logic
+                    // 1. Must have substantial number of paths to avoid "1-click completion" on bad vectorization
+                    // 2. Must cover > 95% of regions
+                    if (!isEraser && paths.length > 5 && Object.keys(newFills).length > paths.length * 0.95) {
                        if (!isCompleted) checkCompletionStrict();
                     }
                 }
@@ -496,10 +498,10 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         <div
           style={{
             transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
-            transformOrigin: '0 0', // Changed to Top Left for easier coordinate mapping
+            transformOrigin: '0 0',
             width: width,   
             height: height, 
-            position: 'absolute', // Absolute to allow free movement via translate
+            position: 'absolute',
             top: 0,
             left: 0,
             backgroundColor: '#ffffff',

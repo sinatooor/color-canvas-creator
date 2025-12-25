@@ -74,8 +74,9 @@ export async function vectorizeImage(base64Image: string): Promise<Vectorization
              ctx.putImageData(imageData, 0, 0);
 
              if (mode === 'regions') {
-                 // Dilate (Thicken black lines) to separate white regions
-                 ctx.filter = 'blur(1.5px)';
+                 // Dilate (Thicken black lines) strongly to separate white regions
+                 // Increasing blur radius makes lines effectively thicker
+                 ctx.filter = 'blur(2.5px)'; 
                  ctx.drawImage(canvas, 0, 0);
                  ctx.filter = 'none';
                  
@@ -83,7 +84,9 @@ export async function vectorizeImage(base64Image: string): Promise<Vectorization
                  const dData = dilatedData.data;
                  for (let i = 0; i < dData.length; i += 4) {
                       // Invert for Potrace: We want to trace the White Regions, so we make them Black.
-                      const val = dData[i] < 200 ? 0 : 255; // Re-threshold after blur
+                      // The blur makes lines gray. Any gray < 240 is treated as line (black).
+                      // This effectively expands the "line" area significantly.
+                      const val = dData[i] < 240 ? 0 : 255; 
                       const invertedVal = val === 255 ? 0 : 255;
                       dData[i] = dData[i+1] = dData[i+2] = invertedVal;
                       dData[i+3] = 255;
