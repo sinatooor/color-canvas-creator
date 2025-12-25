@@ -1,0 +1,7 @@
+{
+  "name": "Colorify AI",
+  "description": "Transform your photos into black and white coloring book illustrations and bring them to life with digital colors.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
