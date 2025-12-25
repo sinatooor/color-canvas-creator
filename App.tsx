@@ -48,11 +48,12 @@ const App: React.FC = () => {
 
   // Editor State
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
-  // Note: 'illustrationUrl' now stores the REGIONS SVG URL for clicking
   const [illustrationUrl, setIllustrationUrl] = useState<string | null>(null);
-  // New: 'outlinesUrl' stores the Black Lines Overlay
   const [outlinesUrl, setOutlinesUrl] = useState<string | undefined>(undefined);
   
+  // New: Store image dimensions for perfect layer alignment
+  const [imageDimensions, setImageDimensions] = useState<{width: number, height: number} | undefined>(undefined);
+
   const [initialStateUrl, setInitialStateUrl] = useState<string | undefined>(undefined);
   const [coloredIllustrationUrl, setColoredIllustrationUrl] = useState<string | null>(null);
   const [originalImageUrl, setOriginalImageUrl] = useState<string | null>(null); 
@@ -124,6 +125,7 @@ const App: React.FC = () => {
     setCurrentProjectId(null); 
     setInitialStateUrl(undefined);
     setCurrentTimelapse(undefined);
+    setImageDimensions(undefined);
 
     try {
       setStatusMessage('Consulting AI Artist...');
@@ -136,6 +138,9 @@ const App: React.FC = () => {
       img.src = coloredIllustration;
       await new Promise((resolve) => { img.onload = resolve; });
       
+      // Capture Dimensions
+      setImageDimensions({ width: img.width, height: img.height });
+
       const canvas = document.createElement('canvas');
       canvas.width = img.width;
       canvas.height = img.height;
@@ -210,6 +215,7 @@ const App: React.FC = () => {
     setPalette(DEFAULT_PALETTE);
     setCurrentProjectId(null);
     setCurrentTimelapse(undefined);
+    setImageDimensions(undefined);
   };
 
   // Load a project from gallery
@@ -221,8 +227,20 @@ const App: React.FC = () => {
     setInitialStateUrl(project.currentStateUrl);
     setPalette(project.palette);
     setCurrentTimelapse(project.timelapseLog); 
-    setState('coloring');
-    setShowGallery(false);
+    
+    // Attempt to get dimensions from original or thumbnail
+    const img = new Image();
+    img.src = project.thumbnailUrl;
+    img.onload = () => {
+       setImageDimensions({ width: img.width, height: img.height });
+       setState('coloring');
+       setShowGallery(false);
+    };
+    img.onerror = () => {
+        // Fallback
+        setState('coloring');
+        setShowGallery(false);
+    };
   };
 
   const handleAutoSave = async (currentImageDataUrl: string, timelapseLog?: TimelapseFrame[]) => {
@@ -472,43 +490,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* CAMERA MODAL */}
-        {showCamera && (
-          <div className="fixed inset-0 z-50 bg-black/95 backdrop-blur-sm flex flex-col items-center justify-center animate-in fade-in duration-300">
-            <div className="relative w-full max-w-2xl aspect-[3/4] md:aspect-video bg-black rounded-3xl overflow-hidden shadow-2xl border-4 border-gray-800">
-              <video 
-                ref={videoRef} 
-                autoPlay 
-                playsInline 
-                className="w-full h-full object-cover"
-              />
-              <div className="absolute inset-0 pointer-events-none border-[1px] border-white/20 grid grid-cols-3 grid-rows-3">
-                 {[...Array(9)].map((_, i) => <div key={i} className="border-[0.5px] border-white/10"></div>)}
-              </div>
-            </div>
-            
-            <div className="flex gap-8 mt-10">
-              <button 
-                onClick={() => {
-                  const stream = videoRef.current?.srcObject as MediaStream;
-                  stream?.getTracks().forEach(t => t.stop());
-                  setShowCamera(false);
-                }}
-                className="w-16 h-16 bg-gray-800 text-white rounded-full flex items-center justify-center text-xl hover:bg-gray-700 transition-colors"
-              >
-                <i className="fa-solid fa-xmark"></i>
-              </button>
-              <button 
-                onClick={capturePhoto}
-                className="w-24 h-24 bg-white rounded-full flex items-center justify-center shadow-lg active:scale-95 transition-transform"
-              >
-                <div className="w-20 h-20 rounded-full border-[6px] border-gray-900"></div>
-              </button>
-              <div className="w-16 h-16"></div> 
-            </div>
-          </div>
-        )}
-
         {/* PROCESSING STATE */}
         {state === 'processing' && (
           <div className="glass-panel flex flex-col items-center gap-8 text-center p-16 rounded-[3rem] shadow-2xl border-t border-white/80 max-w-xl">
@@ -642,6 +623,9 @@ const App: React.FC = () => {
                 onCompletion={handleCompletion}
                 palette={palette}
                 existingTimelapse={currentTimelapse}
+                // Pass Dimensions
+                width={imageDimensions?.width}
+                height={imageDimensions?.height}
               />
             </div>
           </div>

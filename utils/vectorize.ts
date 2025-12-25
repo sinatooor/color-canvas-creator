@@ -1,7 +1,33 @@
 
 import { PotraceLib } from '../types';
 
-declare const Potrace: PotraceLib;
+// Helper to access Potrace globally
+const getPotrace = (): PotraceLib | undefined => {
+  return (window as any).Potrace;
+};
+
+// Fallback loader in case index.html script fails or hasn't loaded
+async function ensurePotraceLoaded(): Promise<PotraceLib> {
+  if ((window as any).Potrace) {
+    return (window as any).Potrace;
+  }
+
+  return new Promise((resolve, reject) => {
+    console.log("Potrace not found, attempting dynamic load...");
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/gh/kilobtye/potrace@master/potrace.js';
+    script.onload = () => {
+      if ((window as any).Potrace) {
+        console.log("Potrace loaded successfully.");
+        resolve((window as any).Potrace);
+      } else {
+        reject(new Error("Potrace loaded but global object missing"));
+      }
+    };
+    script.onerror = () => reject(new Error("Failed to load Potrace library"));
+    document.head.appendChild(script);
+  });
+}
 
 interface VectorizationResult {
   outlines: string; // The black lines (visual overlay)
@@ -11,11 +37,7 @@ interface VectorizationResult {
 export async function vectorizeImage(base64Image: string): Promise<VectorizationResult> {
   return new Promise(async (resolve, reject) => {
     try {
-      if (typeof Potrace === 'undefined') {
-        console.warn('Potrace library not loaded.');
-        reject(new Error("Potrace not loaded"));
-        return;
-      }
+      const Potrace = await ensurePotraceLoaded();
 
       const img = new Image();
       img.crossOrigin = 'anonymous';
@@ -26,93 +48,77 @@ export async function vectorizeImage(base64Image: string): Promise<Vectorization
       const width = img.width;
       const height = img.height;
 
-      // --- HELPER: Process Canvas ---
-      const processCanvas = (mode: 'lines' | 'regions'): string => {
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) throw new Error("Canvas error");
+      // --- HELPER: Process Canvas Layer ---
+      const processLayer = (mode: 'lines' | 'regions'): Promise<string> => {
+        return new Promise((resolveLayer) => {
+             // 1. Create Canvas & Process Image Data
+             const canvas = document.createElement('canvas');
+             canvas.width = width;
+             canvas.height = height;
+             const ctx = canvas.getContext('2d');
+             if (!ctx) throw new Error("Canvas error");
+             
+             ctx.drawImage(img, 0, 0);
+             const imageData = ctx.getImageData(0, 0, width, height);
+             const data = imageData.data;
+             const THRESHOLD = 30;
 
-        ctx.drawImage(img, 0, 0);
-        const imageData = ctx.getImageData(0, 0, width, height);
-        const data = imageData.data;
-        const THRESHOLD = 30; // Strict threshold for lines
+             // Thresholding
+             for (let i = 0; i < data.length; i += 4) {
+               const maxVal = Math.max(data[i], data[i+1], data[i+2]);
+               // If dark, it's a line (0). If light, it's space (255).
+               const val = maxVal < THRESHOLD ? 0 : 255;
+               data[i] = data[i+1] = data[i+2] = val;
+               data[i+3] = 255;
+             }
+             ctx.putImageData(imageData, 0, 0);
 
-        // 1. Thresholding
-        for (let i = 0; i < data.length; i += 4) {
-          const maxVal = Math.max(data[i], data[i+1], data[i+2]);
-          // If dark, it's a line (0). If light, it's space (255).
-          const val = maxVal < THRESHOLD ? 0 : 255;
-          data[i] = data[i+1] = data[i+2] = val;
-          data[i+3] = 255;
-        }
-
-        ctx.putImageData(imageData, 0, 0);
-
-        if (mode === 'regions') {
-            // 2. Dilation (Thicken black lines) to separate white regions
-            // We use a simple blur + threshold trick to dilate the dark lines
-            ctx.filter = 'blur(1.5px)'; // Blur spreads the black
-            ctx.drawImage(canvas, 0, 0);
-            ctx.filter = 'none';
-
-            // Re-threshold to make it sharp binary again
-            const dilatedData = ctx.getImageData(0, 0, width, height);
-            const dData = dilatedData.data;
-            for (let i = 0; i < dData.length; i += 4) {
-                 // After blur, lines (0) spread into white (255). 
-                 // Pixels that became grey (< 200) should join the line (become 0)
-                 // This effectively shrinks the white regions, ensuring separation.
-                 const val = dData[i] < 200 ? 0 : 255;
+             if (mode === 'regions') {
+                 // Dilate (Thicken black lines) to separate white regions
+                 ctx.filter = 'blur(1.5px)';
+                 ctx.drawImage(canvas, 0, 0);
+                 ctx.filter = 'none';
                  
-                 // 3. INVERT for Potrace
-                 // Potrace traces Black. We want it to trace the Regions (currently White).
-                 // So we invert: Regions become Black, Lines become White.
-                 const invertedVal = val === 255 ? 0 : 255;
-                 
-                 dData[i] = dData[i+1] = dData[i+2] = invertedVal;
-                 dData[i+3] = 255;
-            }
-            ctx.putImageData(dilatedData, 0, 0);
-        }
+                 const dilatedData = ctx.getImageData(0, 0, width, height);
+                 const dData = dilatedData.data;
+                 for (let i = 0; i < dData.length; i += 4) {
+                      // Invert for Potrace: We want to trace the White Regions, so we make them Black.
+                      const val = dData[i] < 200 ? 0 : 255; // Re-threshold after blur
+                      const invertedVal = val === 255 ? 0 : 255;
+                      dData[i] = dData[i+1] = dData[i+2] = invertedVal;
+                      dData[i+3] = 255;
+                 }
+                 ctx.putImageData(dilatedData, 0, 0);
+             }
 
-        // Generate SVG
-        const source = canvas.toDataURL('image/png');
-        Potrace.setParameter({
-            turdsize: mode === 'regions' ? 40 : 100,
-            optcurve: true,
-            alphamax: 1,
-            blacklevel: 0.5
+             // 2. Trace
+             const source = canvas.toDataURL('image/png');
+             
+             // Important: Lower turdsize for lines to catch fine details
+             Potrace.setParameter({
+                turdsize: mode === 'regions' ? 40 : 10, 
+                optcurve: true,
+                alphamax: 1,
+                blacklevel: 0.5
+             });
+
+             Potrace.loadImageFromUrl(source);
+             Potrace.process(() => {
+                 resolveLayer(Potrace.getSVG(1));
+             });
         });
-        
-        Potrace.loadImageFromUrl(source);
-        // Potrace is sync inside the process callback, but we need to wrap it
-        let svg = '';
-        Potrace.process(() => {
-            svg = Potrace.getSVG(1);
-        });
-        return svg;
       };
 
-      // --- EXECUTE ---
-      // We need to run these sequentially or manage the Potrace global state carefully. 
-      // Potrace JS is usually synchronous in 'process', but let's be safe.
-      
-      const outlinesSVG = processCanvas('lines');
-      
-      // Small delay to let UI breathe or reset Potrace state if needed (though instance is usually reset on load)
-      setTimeout(() => {
-          const regionsSVG = processCanvas('regions');
-          
-          // Helper to base64 encode SVG
-          const toBase64 = (svgStr: string) => `data:image/svg+xml;base64,${btoa(svgStr)}`;
-          
-          resolve({
-              outlines: toBase64(outlinesSVG),
-              regions: toBase64(regionsSVG)
-          });
-      }, 50);
+      // Execute sequentially to avoid singleton state conflict
+      const outlinesSVG = await processLayer('lines');
+      const regionsSVG = await processLayer('regions');
+
+      const toBase64 = (svgStr: string) => `data:image/svg+xml;base64,${btoa(svgStr)}`;
+
+      resolve({
+          outlines: toBase64(outlinesSVG),
+          regions: toBase64(regionsSVG)
+      });
 
     } catch (err) {
       console.error("Vectorization failed:", err);

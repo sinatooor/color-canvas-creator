@@ -1,14 +1,14 @@
 
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { binarizeImageData, generateHints, checkProgress } from '../utils/imageProcessing';
-import { hexToRgb } from '../utils/floodFill'; // Still used for safe mode check
+import { hexToRgb } from '../utils/floodFill'; 
 import { DrawingAction, Hint, Color, TimelapseFrame } from '../types';
 import { MAX_UNDO_STEPS } from '../constants';
 import { soundEngine } from '../utils/soundEffects';
 
 interface DrawingCanvasProps {
-  imageUrl: string; // This is now the REGIONS SVG URL
-  outlinesUrl?: string; // New prop for the OUTLINES SVG/Image
+  imageUrl: string; 
+  outlinesUrl?: string; 
   initialStateUrl?: string; 
   coloredIllustrationUrl: string | null;
   selectedColor: string;
@@ -19,6 +19,8 @@ interface DrawingCanvasProps {
   onCompletion?: (imageDataUrl: string, timelapse: TimelapseFrame[]) => void;
   palette: Color[];
   existingTimelapse?: TimelapseFrame[];
+  width?: number;
+  height?: number;
 }
 
 const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ 
@@ -33,13 +35,14 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   onAutoSave,
   onCompletion,
   palette,
-  existingTimelapse
+  existingTimelapse,
+  width = 1024,
+  height = 1024
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgContainerRef = useRef<HTMLDivElement>(null);
-  const referenceCanvasRef = useRef<HTMLCanvasElement | null>(null); // For Safe Mode & Hints
+  const referenceCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // We store fills as: { [pathIndex]: hexColor }
   const [fills, setFills] = useState<Record<number, string>>({});
   const [history, setHistory] = useState<Record<number, string>[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -50,15 +53,13 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const [showPreview, setShowPreview] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
   
-  // Timelapse Log
   const timelapseLog = useRef<TimelapseFrame[]>([]);
 
-  // Transform state
+  // Initial Transform State: Scale to fit, positioned at 0,0 relative to origin
   const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
   const [mode, setMode] = useState<'paint' | 'move'>('paint');
   const [isSafeMode, setIsSafeMode] = useState(false); 
 
-  // Gesture state
   const evCache = useRef<React.PointerEvent[]>([]);
   const prevDiff = useRef<number>(-1);
   const isDragging = useRef(false);
@@ -71,37 +72,92 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const isLongPress = useRef(false);
   const startPointerPos = useRef<{x: number, y: number} | null>(null);
 
-  // 1. Load SVG Content
+  // 1. Initial Fit Logic
+  useEffect(() => {
+    if (containerRef.current && width > 0 && height > 0) {
+        const { width: cW, height: cH } = containerRef.current.getBoundingClientRect();
+        // Add some padding (20px)
+        const availW = cW - 40;
+        const availH = cH - 40;
+        
+        const scaleX = availW / width;
+        const scaleY = availH / height;
+        const fitScale = Math.min(scaleX, scaleY);
+        
+        // Center the fitted image
+        const x = (cW - width * fitScale) / 2;
+        const y = (cH - height * fitScale) / 2;
+
+        setTransform({ scale: fitScale, x, y });
+    }
+  }, [width, height]);
+
+  // 2. Load and Process SVG
   useEffect(() => {
     if (!imageUrl) return;
-    fetch(imageUrl)
-      .then(res => res.text())
-      .then(text => {
-          // Process SVG: Remove width/height to allow scaling via CSS
-          // Also set default fill to white
-          const cleanSvg = text
-            .replace(/width="[^"]*"/, '')
-            .replace(/height="[^"]*"/, '')
-            .replace(/<svg /, '<svg style="width:100%; height:100%; fill:white;" ');
-          setSvgContent(cleanSvg);
-      });
+    
+    const processSvgString = (text: string) => {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(text, 'image/svg+xml');
+        const svg = doc.querySelector('svg');
+        if (!svg) return text;
+
+        // Force dimensions to match container
+        svg.setAttribute('width', '100%');
+        svg.setAttribute('height', '100%');
+        svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+        
+        // Inject styles
+        const style = doc.createElementNS('http://www.w3.org/2000/svg', 'style');
+        style.textContent = `path, polygon, rect { fill: #ffffff; stroke: none; vector-effect: non-scaling-stroke; cursor: pointer; }`;
+        svg.prepend(style);
+
+        // Split Compound Paths for Individual Coloring
+        const paths = Array.from(svg.querySelectorAll('path'));
+        paths.forEach(p => {
+            const d = p.getAttribute('d');
+            // If path contains multiple Move commands, it likely has disjoint subpaths
+            if (d && (d.match(/[mM]/g) || []).length > 1) {
+                // Split by 'z' or 'Z' (close path) followed by 'm' or 'M'
+                // This regex finds segments that start with m/M and end with z/Z
+                const subPaths = d.match(/([mM][^zZ]*[zZ])/g);
+                if (subPaths && subPaths.length > 0) {
+                    subPaths.forEach(sp => {
+                        const newP = doc.createElementNS('http://www.w3.org/2000/svg', 'path');
+                        newP.setAttribute('d', sp);
+                        p.parentNode?.insertBefore(newP, p);
+                    });
+                    p.remove();
+                }
+            }
+        });
+
+        return new XMLSerializer().serializeToString(doc);
+    };
+
+    if (imageUrl.startsWith('data:image/svg+xml;base64,')) {
+        try {
+            const base64 = imageUrl.split(',')[1];
+            const text = atob(base64);
+            setSvgContent(processSvgString(text));
+        } catch (e) {
+            console.error("Failed to decode SVG", e);
+        }
+    } else {
+        fetch(imageUrl)
+        .then(res => res.text())
+        .then(text => setSvgContent(processSvgString(text)))
+        .catch(err => console.error("Failed to fetch SVG", err));
+    }
   }, [imageUrl]);
 
-  // 2. Load Timelapse / Initial State
+  // 3. Load Timelapse
   useEffect(() => {
       if (existingTimelapse) {
           timelapseLog.current = [...existingTimelapse];
-          // Replay timelapse to build fills state
           const initialFills: Record<number, string> = {};
           existingTimelapse.forEach(frame => {
-              // Note: Timelapse stored (x,y) for raster. For SVG we need index.
-              // Since we changed architecture, old raster timelapses might not work perfectly 
-              // unless we map (x,y) to path index.
-              // For new SVG architecture, we will store `pathIndex` in `x` (hack) or add new field.
-              // For now, let's assume we start fresh or implement index logic.
-              if (frame.pathIndex !== undefined) {
-                   initialFills[frame.pathIndex] = frame.color;
-              }
+              if (frame.pathIndex !== undefined) initialFills[frame.pathIndex] = frame.color;
           });
           setFills(initialFills);
           setHistory([initialFills]);
@@ -113,7 +169,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       }
   }, [existingTimelapse]);
 
-  // 3. Setup Reference Canvas (Invisible) for Hints & Safe Mode
+  // 4. Setup Reference Canvas
   useEffect(() => {
       if (!coloredIllustrationUrl) return;
       const img = new Image();
@@ -127,33 +183,23 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           if (ctx) {
               ctx.drawImage(img, 0, 0);
               referenceCanvasRef.current = canvas;
-              
-              // Generate hints
               onProcessingHints(true);
-              const hintsData = generateHints(ctx.getImageData(0,0,img.width, img.height), palette);
-              setHints(hintsData);
+              setHints(generateHints(ctx.getImageData(0,0,img.width, img.height), palette));
               onProcessingHints(false);
           }
       };
   }, [coloredIllustrationUrl, palette]);
 
-  // 4. Update SVG Fills when state changes
+  // 5. Update Fills
   useEffect(() => {
       if (!svgContainerRef.current) return;
       const paths = svgContainerRef.current.querySelectorAll('path');
-      
-      // Reset all to white first (or optimized update)
-      // Iterating all is safer for consistency
       paths.forEach((path, index) => {
-          if (fills[index]) {
-              path.style.fill = fills[index];
-          } else {
-              path.style.fill = '#ffffff';
-          }
+          path.style.fill = fills[index] || '#ffffff';
       });
   }, [fills, svgContent]);
 
-  // History Actions
+  // History & Save Actions (unchanged logic, just ensuring function stability)
   const saveToHistory = useCallback((newFills: Record<number, string>) => {
       const newHistory = history.slice(0, historyIndex + 1);
       if (newHistory.length >= MAX_UNDO_STEPS) newHistory.shift();
@@ -171,48 +217,41 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       }
   }, [historyIndex, history]);
 
-  // Save Functionality (SVG to Canvas)
   const generateCompositeImage = useCallback(async () => {
       if (!svgContainerRef.current) return '';
-      
       const svgEl = svgContainerRef.current.querySelector('svg');
       if (!svgEl) return '';
 
-      // 1. Serialize SVG with current colors
       const s = new XMLSerializer();
       const str = s.serializeToString(svgEl);
       const svgBlob = new Blob([str], {type: 'image/svg+xml;charset=utf-8'});
       const url = URL.createObjectURL(svgBlob);
 
-      // 2. Draw to Canvas
       const canvas = document.createElement('canvas');
-      // Use viewBox to determine size, or clientWidth if missing
-      const viewBox = svgEl.getAttribute('viewBox')?.split(' ').map(Number) || [0,0,1024,1024];
-      canvas.width = viewBox[2];
-      canvas.height = viewBox[3];
+      canvas.width = width;
+      canvas.height = height;
       const ctx = canvas.getContext('2d');
       if (!ctx) return '';
 
-      // Draw Color Layer
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+
       const img = new Image();
       img.src = url;
       await new Promise(r => img.onload = r);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, width, height);
 
-      // Draw Outlines Layer
       if (outlinesUrl) {
           const outlines = new Image();
           outlines.src = outlinesUrl;
           outlines.crossOrigin = 'anonymous';
           await new Promise(r => outlines.onload = r);
-          ctx.drawImage(outlines, 0, 0, canvas.width, canvas.height);
+          ctx.drawImage(outlines, 0, 0, width, height);
       }
-
       URL.revokeObjectURL(url);
       return canvas.toDataURL('image/png');
-  }, [outlinesUrl]);
+  }, [outlinesUrl, width, height]);
 
-  // Auto-Save
   useEffect(() => {
       if (!onAutoSave) return;
       const interval = setInterval(async () => {
@@ -224,8 +263,8 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       return () => clearInterval(interval);
   }, [onAutoSave, fills, isCompleted, generateCompositeImage]);
 
+  // --- Interaction Handlers ---
 
-  // Interaction Handlers
   const handlePointerDown = (e: React.PointerEvent) => {
     soundEngine.init();
     evCache.current.push(e);
@@ -240,28 +279,27 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         maxTouchesDetected.current = Math.max(maxTouchesDetected.current, evCache.current.length);
     }
 
+    // Determine mode
     const isPen = e.pointerType === 'pen';
     const isMultiTouch = evCache.current.length > 1;
 
-    let effectiveMode = mode;
-    if (isPen) effectiveMode = 'paint'; 
-    if (isMultiTouch) effectiveMode = 'move';
-
+    // Auto-switch to move if using 2 fingers
     if (isMultiTouch) {
       if (longPressTimer.current) clearTimeout(longPressTimer.current);
     }
 
-    if (effectiveMode === 'move' || e.button === 1 || e.shiftKey) {
+    if (mode === 'move' || isMultiTouch || e.button === 1 || e.shiftKey) {
       isDragging.current = true;
       lastPoint.current = { x: e.clientX, y: e.clientY };
       return;
     }
 
+    // Setup Long Press for Preview
     isLongPress.current = false;
     longPressTimer.current = setTimeout(() => {
       isLongPress.current = true;
       setShowPreview(true);
-    }, 1000);
+    }, 600); // 600ms long press
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
@@ -270,12 +308,13 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     if (startPointerPos.current) {
         const dist = Math.hypot(e.clientX - startPointerPos.current.x, e.clientY - startPointerPos.current.y);
-        if (dist > 10) {
+        if (dist > 8) { // Threshold for "drag" vs "click"
              if (longPressTimer.current) clearTimeout(longPressTimer.current);
-             if (dist > 20) gestureDidMove.current = true; 
+             if (dist > 15) gestureDidMove.current = true; 
         }
     }
 
+    // Pinch Zoom
     if (evCache.current.length === 2) {
       const curDiff = Math.hypot(
         evCache.current[0].clientX - evCache.current[1].clientX,
@@ -292,6 +331,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       return;
     }
 
+    // Pan
     if (isDragging.current && lastPoint.current) {
       const deltaX = e.clientX - lastPoint.current.x;
       const deltaY = e.clientY - lastPoint.current.y;
@@ -316,98 +356,47 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     } else {
         // Handle Click / Paint
         const isPen = e.pointerType === 'pen';
-        const shouldPaint = (mode === 'paint' || isPen) && !isDragging.current && evCache.current.length < 2 && isTracked;
+        const isClick = !isDragging.current && !gestureDidMove.current && evCache.current.length < 2 && isTracked;
+        const shouldPaint = (mode === 'paint' || isPen) && isClick;
         
         if (shouldPaint) {
-            // We use document.elementFromPoint to find the SVG path under the cursor
-            // regardless of the container's transform.
-            // Temporarily hide the overlay outlines to click through to SVG
+            // Hide Overlays
             const overlay = document.getElementById('outline-overlay');
             if (overlay) overlay.style.display = 'none';
+            const preview = document.getElementById('preview-overlay');
+            if (preview) preview.style.display = 'none';
             
+            // Hit Test
             const target = document.elementFromPoint(e.clientX, e.clientY);
             
+            // Restore Overlays
             if (overlay) overlay.style.display = 'block';
+            if (preview) preview.style.display = (showPreview ? 'block' : 'none');
 
-            if (target && target.tagName === 'path' && svgContainerRef.current?.contains(target)) {
+            // Logic: Check if we hit a path
+            // Note: SVG paths inside svgContainerRef
+            if (target && target.tagName.toLowerCase() === 'path' && svgContainerRef.current?.contains(target)) {
                 const paths = Array.from(svgContainerRef.current.querySelectorAll('path'));
                 const pathIndex = paths.indexOf(target as SVGPathElement);
                 
                 if (pathIndex !== -1) {
-                    // Safe Mode Check
-                    let allow = true;
-                    if (isSafeMode && !isEraser && referenceCanvasRef.current) {
-                        const rect = containerRef.current!.getBoundingClientRect();
-                        const scaleX = referenceCanvasRef.current.width / rect.width;
-                        const scaleY = referenceCanvasRef.current.height / rect.height;
-                        
-                        // Map screen click to canvas reference
-                        // Note: This maps the CLICK, not the path centroid. 
-                        // Good enough if clicking center of region.
-                        // We need to account for transform.
-                        // Easier: use offsetX/Y relative to the SVG element if possible, 
-                        // but `elementFromPoint` uses viewport.
-                        
-                        // Let's use the svg bounding box logic:
-                        const svgRect = svgContainerRef.current.getBoundingClientRect();
-                        const relX = (e.clientX - svgRect.left) * (referenceCanvasRef.current.width / svgRect.width);
-                        const relY = (e.clientY - svgRect.top) * (referenceCanvasRef.current.height / svgRect.height);
-                        
-                        const ctx = referenceCanvasRef.current.getContext('2d');
-                        if (ctx) {
-                            const p = ctx.getImageData(relX, relY, 1, 1).data;
-                            const [tr, tg, tb] = hexToRgb(selectedColor);
-                            const diff = Math.abs(p[0]-tr) + Math.abs(p[1]-tg) + Math.abs(p[2]-tb);
-                            if (diff > 80) allow = false;
-                        }
-                    }
+                    const colorToUse = isEraser ? '#ffffff' : selectedColor;
+                    const newFills = { ...fills, [pathIndex]: colorToUse };
+                    setFills(newFills);
+                    saveToHistory(newFills);
+                    
+                    soundEngine.playPop();
+                    addRipple(e.clientX, e.clientY, isEraser ? 'gray' : selectedColor);
+                    timelapseLog.current.push({ x: 0, y: 0, pathIndex, color: colorToUse });
 
-                    if (allow) {
-                        // Calculate coordinates for timelapse (relative to original image size)
-                        let logX = 0;
-                        let logY = 0;
-                        if (svgContainerRef.current) {
-                            const rect = svgContainerRef.current.getBoundingClientRect();
-                            const width = referenceCanvasRef.current?.width || rect.width;
-                            const height = referenceCanvasRef.current?.height || rect.height;
-                            
-                            logX = Math.floor((e.clientX - rect.left) / rect.width * width);
-                            logY = Math.floor((e.clientY - rect.top) / rect.height * height);
-                        }
-
-                        const colorToUse = isEraser ? '#ffffff' : selectedColor;
-                        const newFills = { ...fills, [pathIndex]: colorToUse };
-                        setFills(newFills);
-                        saveToHistory(newFills);
-                        
-                        soundEngine.playPop();
-                        addRipple(e.clientX, e.clientY, isEraser ? 'gray' : selectedColor);
-                        
-                        // Log with pathIndex
-                        timelapseLog.current.push({ x: logX, y: logY, pathIndex, color: colorToUse });
-
-                        // Check Completion (Simple count based)
-                        if (!isEraser && Object.keys(newFills).length > paths.length * 0.9) {
-                           // If 90% paths filled, check specific hints
-                           // Simplified: Just check if we filled enough unique regions
-                           if (!isCompleted) {
-                               // Optional: Validate against hints
-                               checkCompletionStrict();
-                           }
-                        }
-                    } else {
-                        soundEngine.playBuzz();
-                        addRipple(e.clientX, e.clientY, '#ef4444');
+                    if (!isEraser && Object.keys(newFills).length > paths.length * 0.95) {
+                       if (!isCompleted) checkCompletionStrict();
                     }
                 }
-            } else {
-                // Check for Hint Click
-                // Logic remains similar but requires coordinate mapping from Screen -> SVG Space
             }
         }
     }
 
-    // Cleanup
     const index = evCache.current.findIndex((cachedEv) => cachedEv.pointerId === e.pointerId);
     if (index > -1) evCache.current.splice(index, 1);
     if (evCache.current.length < 2) prevDiff.current = -1;
@@ -418,7 +407,6 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   };
 
   const checkCompletionStrict = () => {
-       // Just a stub for now or trigger celebration
        setIsCompleted(true);
        soundEngine.playCheer();
        if (onCompletion) {
@@ -427,7 +415,6 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   };
 
   const addRipple = (x: number, y: number, color: string) => {
-    // Map client coordinates to container relative
     const rect = containerRef.current?.getBoundingClientRect();
     if(rect) {
         const id = Date.now();
@@ -445,14 +432,20 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   };
 
   const resetView = () => {
-     if (!containerRef.current || !svgContainerRef.current) return;
-     // simple reset
-     setTransform({ scale: 1, x: 0, y: 0 });
+    if (containerRef.current) {
+        const { width: cW, height: cH } = containerRef.current.getBoundingClientRect();
+        const scale = Math.min((cW-40)/width, (cH-40)/height);
+        setTransform({ 
+            scale, 
+            x: (cW - width * scale) / 2, 
+            y: (cH - height * scale) / 2 
+        });
+    }
   };
 
   return (
     <div className="flex flex-col items-center gap-4 w-full">
-      {/* Controls UI (Keeping existing structure) */}
+      {/* Controls UI */}
       <div className="glass-panel rounded-full px-4 py-2 flex items-center gap-4 shadow-lg mb-2 z-10 flex-wrap justify-center">
         <div className="flex bg-gray-100 rounded-full p-1">
           <button
@@ -492,40 +485,49 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       <div 
         ref={containerRef} 
-        className="relative bg-white/50 rounded-3xl shadow-xl border border-white/60 overflow-hidden w-full h-[65vh] touch-none"
+        className="relative bg-gray-100/50 rounded-3xl shadow-inner border border-gray-200 overflow-hidden w-full h-[65vh] touch-none flex items-center justify-center"
         style={{ cursor: mode === 'move' ? 'grab' : 'crosshair' }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerLeave={() => isDragging.current = false}
       >
+        {/* The Scalable Canvas Wrapper */}
         <div
           style={{
             transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
-            transformOrigin: '0 0',
-            width: '100%',
-            height: '100%',
-            position: 'relative'
+            transformOrigin: '0 0', // Changed to Top Left for easier coordinate mapping
+            width: width,   
+            height: height, 
+            position: 'absolute', // Absolute to allow free movement via translate
+            top: 0,
+            left: 0,
+            backgroundColor: '#ffffff',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
           }}
         >
-            {/* Preview Layer */}
+            {/* Preview Layer (Z-20) */}
             {coloredIllustrationUrl && showPreview && (
-                <img src={coloredIllustrationUrl} className="absolute inset-0 w-full h-full object-contain z-20 pointer-events-none" />
+                <img 
+                    id="preview-overlay"
+                    src={coloredIllustrationUrl} 
+                    className="absolute inset-0 w-full h-full object-cover z-20 pointer-events-none" 
+                />
             )}
 
-            {/* Layer 1: The Clickable Regions SVG */}
+            {/* Layer 1: The Clickable Regions SVG (Z-0) */}
             <div 
                 ref={svgContainerRef}
                 className="absolute inset-0 w-full h-full z-0"
                 dangerouslySetInnerHTML={{ __html: svgContent || '' }}
             />
 
-            {/* Layer 2: The Outline Overlay (Pointer Events None so clicks go to SVG) */}
+            {/* Layer 2: The Outline Overlay (Z-10) */}
             {outlinesUrl && (
                 <img 
                     id="outline-overlay"
                     src={outlinesUrl} 
-                    className="absolute inset-0 w-full h-full object-contain z-10 pointer-events-none" 
+                    className="absolute inset-0 w-full h-full object-cover z-10 pointer-events-none" 
                     alt="outlines"
                 />
             )}
@@ -535,7 +537,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         {ripples.map(r => (
             <div 
                 key={r.id}
-                className="absolute rounded-full border-2 animate-ping pointer-events-none"
+                className="absolute rounded-full border-2 animate-ping pointer-events-none z-50"
                 style={{
                     left: r.x, top: r.y, width: 40, height: 40,
                     borderColor: r.color,
