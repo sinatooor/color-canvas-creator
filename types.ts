@@ -49,6 +49,12 @@ export interface User {
   avatar?: string;
 }
 
+export interface TimelapseFrame {
+  x: number;
+  y: number;
+  color: string;
+}
+
 export interface SavedProject {
   id: string;
   userId: string;
@@ -58,6 +64,7 @@ export interface SavedProject {
   currentStateUrl?: string; // The active canvas state (lines + colors) for resuming
   originalUrl: string;  // The original photo
   palette: Color[];
+  timelapseLog?: TimelapseFrame[]; // New: Stores the sequence of moves
   isFinished?: boolean; // New: Tracks completion status
   createdAt: number;
   updatedAt?: number;

@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { AppState, Color, User, GenerationSettings, SavedProject } from './types';
+import { AppState, Color, User, GenerationSettings, SavedProject, TimelapseFrame } from './types';
 import { transformToIllustration } from './services/geminiService';
 import { vectorizeImage } from './utils/vectorize';
 import { extractPalette } from './utils/imageProcessing';
@@ -57,6 +57,8 @@ const App: React.FC = () => {
   const [isEraser, setIsEraser] = useState(false);
   const [processingHints, setProcessingHints] = useState(false);
   const [finalImage, setFinalImage] = useState<string>('');
+  const [finalTimelapse, setFinalTimelapse] = useState<TimelapseFrame[]>([]);
+  const [currentTimelapse, setCurrentTimelapse] = useState<TimelapseFrame[] | undefined>(undefined);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -117,6 +119,7 @@ const App: React.FC = () => {
     setError(null);
     setCurrentProjectId(null); // Reset project ID for new generation
     setInitialStateUrl(undefined);
+    setCurrentTimelapse(undefined);
 
     try {
       setStatusMessage('Consulting AI Artist...');
@@ -198,6 +201,7 @@ const App: React.FC = () => {
     setError(null);
     setPalette(DEFAULT_PALETTE);
     setCurrentProjectId(null);
+    setCurrentTimelapse(undefined);
   };
 
   // Load a project from gallery
@@ -206,14 +210,14 @@ const App: React.FC = () => {
     setOriginalImageUrl(project.originalUrl);
     setColoredIllustrationUrl(project.thumbnailUrl);
     setIllustrationUrl(project.vectorUrl);
-    // If we have a current state (resume), use it. Otherwise undefined (starts fresh with vector)
     setInitialStateUrl(project.currentStateUrl);
     setPalette(project.palette);
+    setCurrentTimelapse(project.timelapseLog); // Load previous timelapse
     setState('coloring');
     setShowGallery(false);
   };
 
-  const handleAutoSave = async (currentImageDataUrl: string) => {
+  const handleAutoSave = async (currentImageDataUrl: string, timelapseLog?: TimelapseFrame[]) => {
     if (!user || !illustrationUrl || !coloredIllustrationUrl) return;
 
     try {
@@ -222,6 +226,7 @@ const App: React.FC = () => {
         await storageService.updateProject(currentProjectId, {
           currentStateUrl: currentImageDataUrl,
           thumbnailUrl: coloredIllustrationUrl, 
+          timelapseLog
         });
       } else {
         // Create new project if not exists
@@ -232,7 +237,8 @@ const App: React.FC = () => {
           vectorUrl: illustrationUrl,
           currentStateUrl: currentImageDataUrl,
           originalUrl: originalImageUrl || '',
-          palette: palette
+          palette: palette,
+          timelapseLog
         });
         setCurrentProjectId(newProject.id);
       }
@@ -241,14 +247,16 @@ const App: React.FC = () => {
     }
   };
 
-  const handleCompletion = async (imageDataUrl: string) => {
+  const handleCompletion = async (imageDataUrl: string, timelapseLog: TimelapseFrame[]) => {
       setFinalImage(imageDataUrl);
+      setFinalTimelapse(timelapseLog);
       setShowCompletion(true);
       
       if (user && currentProjectId) {
           try {
               await storageService.updateProject(currentProjectId, {
                   currentStateUrl: imageDataUrl,
+                  timelapseLog: timelapseLog,
                   isFinished: true
               });
           } catch(e) {
@@ -312,6 +320,8 @@ const App: React.FC = () => {
         isOpen={showCompletion}
         onClose={() => { setShowCompletion(false); setState('idle'); }}
         thumbnailUrl={finalImage}
+        timelapseLog={finalTimelapse}
+        baseVectorUrl={illustrationUrl || ''}
       />
 
       {/* Top Bar */}
@@ -630,6 +640,7 @@ const App: React.FC = () => {
                 onAutoSave={user ? handleAutoSave : undefined}
                 onCompletion={handleCompletion}
                 palette={palette}
+                existingTimelapse={currentTimelapse}
               />
             </div>
           </div>

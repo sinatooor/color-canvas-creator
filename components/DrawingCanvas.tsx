@@ -2,8 +2,9 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { floodFill, hexToRgb } from '../utils/floodFill';
 import { binarizeImageData, generateHints, cleanupArtifacts, checkProgress } from '../utils/imageProcessing';
-import { DrawingAction, Hint, Color } from '../types';
+import { DrawingAction, Hint, Color, TimelapseFrame } from '../types';
 import { MAX_UNDO_STEPS } from '../constants';
+import { soundEngine } from '../utils/soundEffects';
 
 interface DrawingCanvasProps {
   imageUrl: string; // The base vector URL (used for dimensions/reset)
@@ -13,9 +14,10 @@ interface DrawingCanvasProps {
   isEraser: boolean;
   onHintClick: (colorHex: string) => void;
   onProcessingHints: (isProcessing: boolean) => void;
-  onAutoSave?: (imageDataUrl: string) => void;
-  onCompletion?: (imageDataUrl: string) => void;
+  onAutoSave?: (imageDataUrl: string, timelapse?: TimelapseFrame[]) => void;
+  onCompletion?: (imageDataUrl: string, timelapse: TimelapseFrame[]) => void;
   palette: Color[];
+  existingTimelapse?: TimelapseFrame[];
 }
 
 const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ 
@@ -28,7 +30,8 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   onProcessingHints,
   onAutoSave,
   onCompletion,
-  palette
+  palette,
+  existingTimelapse
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -41,6 +44,9 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const [showPreview, setShowPreview] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
   
+  // Timelapse Log
+  const timelapseLog = useRef<TimelapseFrame[]>([]);
+
   // Transform state
   const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
   const [mode, setMode] = useState<'paint' | 'move'>('paint');
@@ -68,6 +74,13 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (!canvas) return;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
+
+    // Load timelapse if exists
+    if (existingTimelapse) {
+        timelapseLog.current = [...existingTimelapse];
+    } else {
+        timelapseLog.current = [];
+    }
 
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -112,7 +125,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         onProcessingHints(false);
       }, 300);
     };
-  }, [imageUrl, initialStateUrl, palette]);
+  }, [imageUrl, initialStateUrl, palette, existingTimelapse]);
 
   // Load Reference Image for Safe Mode
   useEffect(() => {
@@ -139,7 +152,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const intervalId = setInterval(() => {
       if (canvasRef.current && historyIndex >= 0 && !isCompleted) {
         const dataUrl = canvasRef.current.toDataURL('image/png');
-        onAutoSave(dataUrl);
+        onAutoSave(dataUrl, timelapseLog.current);
       }
     }, 10000); 
 
@@ -170,9 +183,37 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       if (canvas && ctx) {
         ctx.putImageData(history[newIndex].imageData, 0, 0);
         setHistoryIndex(newIndex);
+        // Pop last action from timelapse log if it matches (simplification: just removing last)
+        timelapseLog.current.pop();
       }
     }
   }, [historyIndex, history]);
+
+  const checkColorCompletion = (ctx: CanvasRenderingContext2D, color: string) => {
+      if (!hints.length) return;
+      
+      // Filter hints that should be this color
+      const colorHints = hints.filter(h => h.colorHex.toLowerCase() === color.toLowerCase());
+      if (colorHints.length === 0) return;
+
+      const data = ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height).data;
+      const width = ctx.canvas.width;
+
+      // Check if all of them are filled
+      let allFilled = true;
+      for (const hint of colorHints) {
+          const idx = (hint.y * width + hint.x) * 4;
+          // Check if pixel is NOT white/near-white
+          if (data[idx] > 240 && data[idx+1] > 240 && data[idx+2] > 240) {
+              allFilled = false;
+              break;
+          }
+      }
+
+      if (allFilled) {
+          soundEngine.playDing();
+      }
+  };
 
   const checkAndHandleCompletion = (ctx: CanvasRenderingContext2D) => {
     if (isCompleted || !onCompletion) return;
@@ -182,8 +223,9 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     
     if (done) {
         setIsCompleted(true);
+        soundEngine.playCheer();
         setTimeout(() => {
-            onCompletion(ctx.canvas.toDataURL('image/png'));
+            onCompletion(ctx.canvas.toDataURL('image/png'), timelapseLog.current);
         }, 500);
     }
   };
@@ -211,6 +253,9 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   };
 
   const handlePointerDown = (e: React.PointerEvent) => {
+    // Resume audio context on user interaction
+    soundEngine.init();
+    
     evCache.current.push(e);
     canvasRef.current?.setPointerCapture(e.pointerId);
     startPointerPos.current = { x: e.clientX, y: e.clientY };
@@ -349,37 +394,42 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                     if (isSafeMode && !isEraser && referenceDataRef.current) {
                         const refData = referenceDataRef.current.data;
                         const idx = (iy * referenceDataRef.current.width + ix) * 4;
-                        
-                        // Reference pixel color
                         const refR = refData[idx];
                         const refG = refData[idx+1];
                         const refB = refData[idx+2];
-                        
-                        // Selected color
                         const [selR, selG, selB] = hexToRgb(selectedColor);
-                        
-                        // Calculate difference (Euclidean distance approximation)
-                        // Tolerance covers jpeg compression artifacts and palette quantization
                         const diff = Math.abs(refR - selR) + Math.abs(refG - selG) + Math.abs(refB - selB);
                         
-                        // Threshold of 60 allows for slight variations but blocks distinct colors
                         if (diff > 60) {
                             allowFill = false;
                         }
                     }
 
                     if (!allowFill) {
-                        // REJECT: Wrong color
-                        addRipple(e.clientX - containerRef.current!.getBoundingClientRect().left, e.clientY - containerRef.current!.getBoundingClientRect().top, '#ef4444'); // Red
+                        soundEngine.playBuzz(); // Sound Effect
+                        addRipple(e.clientX - containerRef.current!.getBoundingClientRect().left, e.clientY - containerRef.current!.getBoundingClientRect().top, '#ef4444');
                     } else {
-                        // ALLOW
                         const colorToUse = isEraser ? '#FFFFFF' : selectedColor;
-                        const didPaint = floodFill(ctx, ix, iy, colorToUse);
+                        
+                        // Pass referenceDataRef.current as segmentation data to prevent leaks!
+                        const didPaint = floodFill(
+                            ctx, 
+                            ix, 
+                            iy, 
+                            colorToUse,
+                            referenceDataRef.current // <--- NEW PARAMETER
+                        );
+
                         if (didPaint) {
+                            // Success Actions
+                            soundEngine.playPop(); // Sound Effect
+                            timelapseLog.current.push({ x: ix, y: iy, color: colorToUse }); // Timelapse Log
+
                             saveToHistory();
                             addRipple(e.clientX - containerRef.current!.getBoundingClientRect().left, e.clientY - containerRef.current!.getBoundingClientRect().top, isEraser ? 'gray' : selectedColor);
                             
                             if (!isEraser && hints.length > 0) {
+                                checkColorCompletion(ctx, selectedColor); // Sound check
                                 checkAndHandleCompletion(ctx);
                             }
                         }
@@ -559,7 +609,6 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                     opacity: 0.8
                 }}
             >
-                {/* Add an X icon if it is an error ripple */}
                 {r.color === '#ef4444' && (
                     <div className="absolute inset-0 flex items-center justify-center text-red-500 text-lg">
                         <i className="fa-solid fa-xmark"></i>
