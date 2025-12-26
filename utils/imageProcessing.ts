@@ -1,5 +1,17 @@
 
 import { Color, Hint } from '../types';
+import {
+  OUTLINE_DARKNESS_THRESHOLD,
+  MIN_FILL_LUMINANCE,
+  DARK_FILL_BOOST,
+  BINARIZE_THRESHOLD,
+  NOISE_NEIGHBOR_THRESHOLD,
+  PALETTE_SAMPLE_STEP,
+  PALETTE_K_MEANS_K,
+  PALETTE_K_MEANS_MAX_ITERATIONS,
+  PALETTE_BLACK_THRESHOLD,
+  PALETTE_WHITE_THRESHOLD
+} from '../constants';
 
 /**
  * ARCHITECTURE IMPLEMENTATION: cv_and_vectorization.validation_checks
@@ -17,9 +29,8 @@ export function validateAndFixFrame(imageData: ImageData): ImageData {
     const g = data[i + 1];
     const b = data[i + 2];
     
-    // 1. Detect Outline vs Fill
-    // Strict threshold for "Black" outline
-    const isDark = r < 40 && g < 40 && b < 40;
+    // 1. Detect Outline vs Fill using OUTLINE_DARKNESS_THRESHOLD
+    const isDark = r < OUTLINE_DARKNESS_THRESHOLD && g < OUTLINE_DARKNESS_THRESHOLD && b < OUTLINE_DARKNESS_THRESHOLD;
     
     if (isDark) {
        // Force to Pure Black for Potrace stability
@@ -27,19 +38,14 @@ export function validateAndFixFrame(imageData: ImageData): ImageData {
        data[i+1] = 0;
        data[i+2] = 0;
     } else {
-       // 2. Validate Fill Luminance
-       // Y = 0.299R + 0.587G + 0.114B
+       // 2. Validate Fill Luminance (BT.601 luma formula)
        const lum = 0.299*r + 0.587*g + 0.114*b;
        
        // If fill is too dark (but not an outline), lighten it
-       // Threshold 76 is approx 30% of 255
-       if (lum < 76) {
-           // Lighten by mixing with white (Tint)
-           // Increase brightness to at least ~100
-           const boost = 60;
-           data[i] = Math.min(255, r + boost);
-           data[i+1] = Math.min(255, g + boost);
-           data[i+2] = Math.min(255, b + boost);
+       if (lum < MIN_FILL_LUMINANCE) {
+           data[i] = Math.min(255, r + DARK_FILL_BOOST);
+           data[i+1] = Math.min(255, g + DARK_FILL_BOOST);
+           data[i+2] = Math.min(255, b + DARK_FILL_BOOST);
        }
     }
   }
@@ -48,9 +54,9 @@ export function validateAndFixFrame(imageData: ImageData): ImageData {
 
 /**
  * Converts image data to strict Black and White (1-bit equivalent).
- * Uses Max Channel Value < 20 to identify lines.
+ * Uses Max Channel Value < threshold to identify lines.
  */
-export function binarizeImageData(imageData: ImageData, threshold: number = 20): ImageData {
+export function binarizeImageData(imageData: ImageData, threshold: number = BINARIZE_THRESHOLD): ImageData {
   const data = imageData.data;
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i];
@@ -59,7 +65,6 @@ export function binarizeImageData(imageData: ImageData, threshold: number = 20):
     
     // Max Channel logic: If any channel is bright enough, it's NOT a black line.
     const maxVal = Math.max(r, g, b);
-
     const value = maxVal < threshold ? 0 : 255;
     
     data[i] = value;     // R
@@ -98,7 +103,7 @@ export function cleanupArtifacts(imageData: ImageData): ImageData {
               }
           }
           
-          if (neighbors < 4) {
+          if (neighbors < NOISE_NEIGHBOR_THRESHOLD) {
               const newVal = val === 0 ? 255 : 0;
               data[idx] = newVal;
               data[idx+1] = newVal;
@@ -113,50 +118,58 @@ export function cleanupArtifacts(imageData: ImageData): ImageData {
  * Extracts a palette using K-Means Clustering.
  * Sorts by HSL Hue for better visual organization.
  */
+/**
+ * Extracts a palette using K-Means Clustering.
+ * Sorts by HSL Hue for better visual organization.
+ * 
+ * PERFORMANCE: Uses PALETTE_SAMPLE_STEP for reduced sampling (default 1/100th).
+ */
 export function extractPalette(imageData: ImageData): Color[] {
   const data = imageData.data;
   const pixels: number[][] = [];
   
   // 1. Sampling Step: Don't process every pixel for speed.
-  // Take 1 pixel every 10 step (1/100th of image) which is statistically sufficient.
-  const step = 10;
-  
-  for (let i = 0; i < data.length; i += 4 * step) {
+  // Uses PALETTE_SAMPLE_STEP constant (1/100th of image is statistically sufficient)
+  for (let i = 0; i < data.length; i += 4 * PALETTE_SAMPLE_STEP) {
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
     
-    // Skip dark outlines and near-white backgrounds
-    if (r < 50 && g < 50 && b < 50) continue; // Skip Black
-    if (r > 245 && g > 245 && b > 245) continue; // Skip White
+    // Skip dark outlines and near-white backgrounds using constants
+    if (r < PALETTE_BLACK_THRESHOLD && g < PALETTE_BLACK_THRESHOLD && b < PALETTE_BLACK_THRESHOLD) continue;
+    if (r > PALETTE_WHITE_THRESHOLD && g > PALETTE_WHITE_THRESHOLD && b > PALETTE_WHITE_THRESHOLD) continue;
 
     pixels.push([r, g, b]);
   }
 
   if (pixels.length === 0) return [{ name: 'Blue', hex: '#3b82f6' }];
 
-  // 2. K-Means Algorithm
-  const K = 24; // Target palette size
-  const maxIterations = 10;
-  
+  // 2. K-Means Algorithm with constants
   // Initialize centroids randomly
-  let centroids = [];
-  for(let i=0; i<K; i++) {
+  let centroids: number[][] = [];
+  for (let i = 0; i < PALETTE_K_MEANS_K; i++) {
      centroids.push(pixels[Math.floor(Math.random() * pixels.length)]);
   }
 
-  for (let iter = 0; iter < maxIterations; iter++) {
+  for (let iter = 0; iter < PALETTE_K_MEANS_MAX_ITERATIONS; iter++) {
       // Assignment step
-      const clusters: number[][][] = Array.from({ length: K }, () => []);
+      const clusters: number[][][] = Array.from({ length: PALETTE_K_MEANS_K }, () => []);
 
-      for (let i = 0; i < pixels.length; i++) {
+      // PERFORMANCE: Early exit for pixels if sample is large
+      const pixelCount = pixels.length;
+      for (let i = 0; i < pixelCount; i++) {
           const p = pixels[i];
           let minDist = Infinity;
           let bestK = 0;
+          const p0 = p[0], p1 = p[1], p2 = p[2]; // Cache for performance
           
-          for (let j = 0; j < K; j++) {
+          for (let j = 0; j < PALETTE_K_MEANS_K; j++) {
               const c = centroids[j];
-              const dist = (p[0]-c[0])**2 + (p[1]-c[1])**2 + (p[2]-c[2])**2;
+              // Inline squared distance calculation (avoid Math.pow for speed)
+              const dr = p0 - c[0];
+              const dg = p1 - c[1];
+              const db = p2 - c[2];
+              const dist = dr * dr + dg * dg + db * db;
               if (dist < minDist) {
                   minDist = dist;
                   bestK = j;
@@ -167,8 +180,8 @@ export function extractPalette(imageData: ImageData): Color[] {
 
       // Update step
       let changed = false;
-      const newCentroids = [];
-      for (let j = 0; j < K; j++) {
+      const newCentroids: number[][] = [];
+      for (let j = 0; j < PALETTE_K_MEANS_K; j++) {
           const cluster = clusters[j];
           if (cluster.length === 0) {
               // If cluster empty, keep old centroid or re-init

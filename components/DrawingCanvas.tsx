@@ -12,9 +12,8 @@ interface DrawingCanvasProps {
   initialRegionColors?: Record<number, string>;
   coloredIllustrationUrl: string | null;
   selectedColor: string;
-  outlineColor?: string; // New Prop
+  outlineColor?: string;
   isEraser: boolean;
-  onHintClick: (colorHex: string) => void;
   onProcessingHints: (isProcessing: boolean) => void;
   onAutoSave?: (imageDataUrl: string, regionColors: Record<number, string>, timelapse?: TimelapseFrame[]) => void;
   onCompletion?: (imageDataUrl: string, timelapse: TimelapseFrame[]) => void;

@@ -692,7 +692,6 @@ const App: React.FC = () => {
                 selectedColor={selectedColor}
                 outlineColor={outlineColor} 
                 isEraser={isEraser}
-                onHintClick={(c) => { setSelectedColor(c); setIsEraser(false); }}
                 onProcessingHints={setProcessingHints}
                 onAutoSave={user ? handleAutoSave : undefined}
                 onCompletion={handleCompletion}
