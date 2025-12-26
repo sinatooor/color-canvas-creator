@@ -26,9 +26,9 @@ export const useJobProcessor = () => {
   });
 
   const updateJobStep = (job: Job, stepId: string, status: 'running' | 'completed', progress: number): Job => {
-    const updatedSteps = job.steps.map(s => {
+    const updatedSteps = job.steps.map((s): typeof s => {
       if (s.id === stepId) return { ...s, status };
-      if (status === 'running' && s.id !== stepId && s.status === 'running') return { ...s, status: 'completed' };
+      if (status === 'running' && s.id !== stepId && s.status === 'running') return { ...s, status: 'completed' as const };
       return s;
     });
     
@@ -37,7 +37,7 @@ export const useJobProcessor = () => {
       status: 'running',
       currentStepId: stepId,
       progress: progress,
-      steps: updatedSteps as any
+      steps: updatedSteps
     };
   };
 

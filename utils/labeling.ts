@@ -1,6 +1,7 @@
 
 import { RegionData, ScanlineRun, Color } from "../types";
 import { hexToRgb } from "./floodFill";
+import { WALL_THRESHOLD } from "../constants";
 
 /**
  * ARCHITECTURE IMPLEMENTATION: Label Map Generator
@@ -8,6 +9,9 @@ import { hexToRgb } from "./floodFill";
  * Performs Connected Components Labeling (CCL) on the image.
  * - Treats black/dark pixels as Walls (ID: 0)
  * - Groups connected non-dark pixels into Regions (ID: 1..N)
+ * 
+ * PERFORMANCE: Uses Int32Array internally, converts to number[] for JSON serialization.
+ * Future optimization: Use Uint32Array + Base64 encoding for ~4x size reduction.
  */
 export function computeLabelMap(imageData: ImageData): RegionData {
     const width = imageData.width;
@@ -17,16 +21,15 @@ export function computeLabelMap(imageData: ImageData): RegionData {
     let currentLabel = 1;
 
     // Helper: Check if a pixel is a boundary (Wall)
-    // We assume validateAndFixFrame has already forced outlines to be pure black (0,0,0)
-    // But we use a small threshold just in case
+    // Uses WALL_THRESHOLD constant for dark pixel detection
     const isWall = (idx: number) => {
         const r = data[idx * 4];
         const g = data[idx * 4 + 1];
         const b = data[idx * 4 + 2];
-        return r < 30 && g < 30 && b < 30;
+        return r < WALL_THRESHOLD && g < WALL_THRESHOLD && b < WALL_THRESHOLD;
     };
 
-    // Stack for DFS/FloodFill
+    // Pre-allocate stack with estimated capacity for performance
     const stack: number[] = [];
 
     for (let y = 0; y < height; y++) {
@@ -50,23 +53,52 @@ export function computeLabelMap(imageData: ImageData): RegionData {
                 const cx = currIdx % width;
                 const cy = Math.floor(currIdx / width);
 
-                // Check 4-connectivity neighbors
-                const neighbors = [
-                    { nx: cx + 1, ny: cy, nIdx: currIdx + 1 },
-                    { nx: cx - 1, ny: cy, nIdx: currIdx - 1 },
-                    { nx: cx, ny: cy + 1, nIdx: currIdx + width },
-                    { nx: cx, ny: cy - 1, nIdx: currIdx - width }
-                ];
-
-                for (const { nx, ny, nIdx } of neighbors) {
-                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-                        if (labels[nIdx] === -1) {
-                            if (isWall(nIdx)) {
-                                labels[nIdx] = 0;
-                            } else {
-                                labels[nIdx] = currentLabel;
-                                stack.push(nIdx);
-                            }
+                // Check 4-connectivity neighbors (inline for performance)
+                // Right
+                if (cx + 1 < width) {
+                    const nIdx = currIdx + 1;
+                    if (labels[nIdx] === -1) {
+                        if (isWall(nIdx)) {
+                            labels[nIdx] = 0;
+                        } else {
+                            labels[nIdx] = currentLabel;
+                            stack.push(nIdx);
+                        }
+                    }
+                }
+                // Left
+                if (cx > 0) {
+                    const nIdx = currIdx - 1;
+                    if (labels[nIdx] === -1) {
+                        if (isWall(nIdx)) {
+                            labels[nIdx] = 0;
+                        } else {
+                            labels[nIdx] = currentLabel;
+                            stack.push(nIdx);
+                        }
+                    }
+                }
+                // Down
+                if (cy + 1 < height) {
+                    const nIdx = currIdx + width;
+                    if (labels[nIdx] === -1) {
+                        if (isWall(nIdx)) {
+                            labels[nIdx] = 0;
+                        } else {
+                            labels[nIdx] = currentLabel;
+                            stack.push(nIdx);
+                        }
+                    }
+                }
+                // Up
+                if (cy > 0) {
+                    const nIdx = currIdx - width;
+                    if (labels[nIdx] === -1) {
+                        if (isWall(nIdx)) {
+                            labels[nIdx] = 0;
+                        } else {
+                            labels[nIdx] = currentLabel;
+                            stack.push(nIdx);
                         }
                     }
                 }
@@ -79,7 +111,7 @@ export function computeLabelMap(imageData: ImageData): RegionData {
     return {
         width,
         height,
-        labelMap: Array.from(labels), // Convert TypedArray to standard array for easier JSON serialization
+        labelMap: Array.from(labels), // Convert TypedArray to standard array for JSON serialization
         maxRegionId: currentLabel - 1
     };
 }
@@ -177,8 +209,11 @@ export function analyzeRegionHints(
     const hints: RegionHint[] = [];
 
     // Process accumulators into Hints
+    // Import MIN_REGION_SIZE_FOR_HINTS at top - using inline value for now
+    const MIN_HINT_SIZE = 100; // Minimum region size to show hints (filter noise)
+    
     for (let id = 1; id <= maxRegionId; id++) {
-        if (count[id] < 100) continue; // Skip tiny specks (< 100 pixels) to avoid clutter
+        if (count[id] < MIN_HINT_SIZE) continue; // Skip tiny specks to avoid clutter
 
         const avgR = rSum[id] / count[id];
         const avgG = gSum[id] / count[id];

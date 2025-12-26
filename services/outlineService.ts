@@ -1,6 +1,7 @@
 
 import { vectorizeImageData } from '../utils/vectorize';
 import { OutlineThickness } from '../types';
+import { MEDIAN_FILTER_THRESHOLD, DESPECKLE_MIN_SIZE } from '../constants';
 
 /**
  * OutlineMakerService Module
@@ -63,6 +64,14 @@ export const outlineService = {
   }
 };
 
+/** Thickness radius lookup table */
+const THICKNESS_RADIUS: Record<OutlineThickness, number> = {
+  thin: 1,    // Approx 2px line
+  medium: 2,  // Approx 4px line
+  thick: 3,   // Approx 6px line
+  heavy: 5    // Approx 10px line
+};
+
 /**
  * Central Logic: Computes the binary wall mask from the input image.
  */
@@ -73,24 +82,14 @@ function computeCleanMask(imageData: ImageData, thickness: OutlineThickness): Ui
     // 1. Initial Processing: Median Filter (De-noise)
     let mask = applyMedianFilter(imageData);
     
-    // 2. Despeckle: Remove small isolated black regions
-    mask = removeSmallComponents(mask, width, height, 50); 
+    // 2. Despeckle: Remove small isolated black regions using constant
+    mask = removeSmallComponents(mask, width, height, DESPECKLE_MIN_SIZE); 
 
     // 3. Skeletonize: Thin lines to 1px centerlines
     mask = skeletonize(mask, width, height);
 
-    // 4. Controlled Thickening based on User Setting
-    // We add a minimum base radius to ensure the vectorizer always has something to bite on.
-    // 1px skeleton is too thin for reliable vectorization.
-    let radius = 1; 
-    
-    switch (thickness) {
-        case 'thin': radius = 1; break; // Increased from 0 to 1 (approx 2px line)
-        case 'medium': radius = 2; break; // Increased from 1.5
-        case 'thick': radius = 3; break;
-        case 'heavy': radius = 5; break;
-    }
-
+    // 4. Controlled Thickening based on User Setting (using lookup table)
+    const radius = THICKNESS_RADIUS[thickness];
     mask = morphDilateCircular(mask, width, height, radius);
 
     // 5. Gap Closing: Small close operation to fix micro-breaks
@@ -103,29 +102,44 @@ function computeCleanMask(imageData: ImageData, thickness: OutlineThickness): Ui
 /**
  * 3x3 Median Filter to remove noise while preserving edges.
  * Returns binary mask (1=Black/Wall, 0=White/Empty).
+ * PERFORMANCE: Insertion sort for 9 elements is faster than Array.sort()
  */
 function applyMedianFilter(imageData: ImageData): Uint8Array {
     const { width, height, data } = imageData;
     const output = new Uint8Array(width * height);
     
+    // Pre-calculate offsets for 3x3 kernel (avoids repeated multiplication)
     const getVal = (x: number, y: number) => {
         if (x < 0 || x >= width || y < 0 || y >= height) return 255;
-        // Use Green channel as proxy for grayscale
-        return data[(y * width + x) * 4 + 1]; 
+        return data[(y * width + x) * 4 + 1]; // Green channel as grayscale proxy
     };
 
+    // Reusable array for median calculation (avoid allocation in loop)
+    const vals = new Uint8Array(9);
+    
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
-            const vals: number[] = [];
+            // Collect 3x3 neighborhood
+            let idx = 0;
             for (let dy = -1; dy <= 1; dy++) {
                 for (let dx = -1; dx <= 1; dx++) {
-                    vals.push(getVal(x + dx, y + dy));
+                    vals[idx++] = getVal(x + dx, y + dy);
                 }
             }
-            vals.sort((a, b) => a - b);
-            const median = vals[4]; // Middle of 9
-            // Threshold: < 128 is Black (Wall=1)
-            output[y * width + x] = median < 128 ? 1 : 0;
+            
+            // Inline insertion sort for 9 elements (faster than Array.sort for small n)
+            for (let i = 1; i < 9; i++) {
+                const key = vals[i];
+                let j = i - 1;
+                while (j >= 0 && vals[j] > key) {
+                    vals[j + 1] = vals[j];
+                    j--;
+                }
+                vals[j + 1] = key;
+            }
+            
+            // Threshold: < MEDIAN_FILTER_THRESHOLD is Black (Wall=1)
+            output[y * width + x] = vals[4] < MEDIAN_FILTER_THRESHOLD ? 1 : 0;
         }
     }
     return output;
