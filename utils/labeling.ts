@@ -21,12 +21,13 @@ export function computeLabelMap(imageData: ImageData): RegionData {
     let currentLabel = 1;
 
     // Helper: Check if a pixel is a boundary (Wall)
-    // Uses WALL_THRESHOLD constant for dark pixel detection
+    // Uses max channel for more accurate dark pixel detection
     const isWall = (idx: number) => {
         const r = data[idx * 4];
         const g = data[idx * 4 + 1];
         const b = data[idx * 4 + 2];
-        return r < WALL_THRESHOLD && g < WALL_THRESHOLD && b < WALL_THRESHOLD;
+        const maxChannel = Math.max(r, g, b);
+        return maxChannel < WALL_THRESHOLD;
     };
 
     // Pre-allocate stack with estimated capacity for performance
