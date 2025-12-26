@@ -1,5 +1,6 @@
 // @ts-nocheck - Deno edge function runs in Deno runtime
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { GoogleGenAI } from "npm:@google/genai@^1.0.0";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -19,6 +20,8 @@ serve(async (req) => {
       throw new Error("GEMINI_API_KEY is not configured");
     }
 
+    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+
     const stylePrompts: Record<string, string> = {
       classic: "Paint by Numbers style. Clean, distinct organic shapes. Balanced composition.",
       stained_glass: "Stained Glass window style. Thick, geometric black leading lines. Jewel-tone flat colors. Angular segmentation.",
@@ -32,10 +35,10 @@ serve(async (req) => {
       high: { max: "0.5%", min: "0.1%" }
     };
 
-    let prompt: string;
+    let promptText: string;
     
     if (mode === 'line_art') {
-      prompt = `Convert this colored illustration into a strict BLACK AND WHITE coloring page.
+      promptText = `Convert this colored illustration into a strict BLACK AND WHITE coloring page.
 
 REQUIREMENTS:
 1. **Remove ALL Color**: The result must be purely Black lines on a White background.
@@ -54,7 +57,7 @@ Output a clean, vector-style line art image suitable for a coloring book.`;
       const selectedStyle = stylePrompts[style] || stylePrompts.classic;
       const selectedComplexity = complexityConfig[complexity] || complexityConfig.medium;
 
-      prompt = `You are an expert technical illustrator creating a source image for a coloring app.
+      promptText = `You are an expert technical illustrator creating a source image for a coloring app.
 
 TASK: Convert this image into a "${style}" style illustration.
 
@@ -81,91 +84,82 @@ The result should look like a professional vector coloring page template where t
 
     console.log(`Processing ${mode} request with style: ${style}, complexity: ${complexity}`);
 
-    // Use Google Gemini API directly with user's API key
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp-image-generation:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  inline_data: {
-                    mime_type: mimeType,
-                    data: imageData
-                  }
-                },
-                {
-                  text: prompt
-                }
-              ]
-            }
+    // Try with gemini-3-pro-image-preview first (best quality)
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-pro-image-preview',
+        contents: {
+          parts: [
+            { inlineData: { data: imageData, mimeType: mimeType } },
+            { text: promptText + "\n\nResolution: 2K." }
           ],
-          generationConfig: {
-            responseModalities: ["TEXT", "IMAGE"]
-          }
-        }),
-      }
-    );
+        },
+        config: {
+          responseModalities: ["TEXT", "IMAGE"],
+          imageConfig: { imageSize: "2K", aspectRatio: "1:1" }
+        }
+      });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Gemini API error:", response.status, errorText);
-      
-      if (response.status === 429) {
-        return new Response(JSON.stringify({ error: "Rate limit exceeded. Please try again in a moment." }), {
-          status: 429,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      if (response.status === 403) {
-        return new Response(JSON.stringify({ error: "Invalid API key or quota exceeded." }), {
-          status: 403,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      throw new Error(`Gemini API error: ${response.status}`);
-    }
+      console.log("Gemini 3 Pro response received");
 
-    const data = await response.json();
-    console.log("Gemini response received successfully");
-
-    // Extract the generated image from the Gemini response
-    const parts = data.candidates?.[0]?.content?.parts;
-    let imageBase64: string | null = null;
-    let imageMimeType = "image/png";
-
-    if (parts) {
-      for (const part of parts) {
-        if (part.inline_data) {
-          imageBase64 = part.inline_data.data;
-          imageMimeType = part.inline_data.mime_type || "image/png";
-          break;
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          const imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+          return new Response(JSON.stringify({ imageUrl }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
         }
       }
-    }
-    
-    if (!imageBase64) {
-      console.error("No image in response:", JSON.stringify(data));
-      throw new Error("No image generated by Gemini");
+    } catch (err) {
+      console.warn("Pro model failed, attempting fallback...", err);
     }
 
-    // Return as data URL
-    const imageUrl = `data:${imageMimeType};base64,${imageBase64}`;
+    // Fallback to gemini-2.5-flash-image
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+          parts: [
+            { inlineData: { data: imageData, mimeType: mimeType } },
+            { text: promptText }
+          ],
+        },
+        config: {
+          responseModalities: ["TEXT", "IMAGE"],
+          imageConfig: { aspectRatio: "1:1" }
+        }
+      });
 
-    return new Response(JSON.stringify({ imageUrl }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+      console.log("Gemini 2.5 Flash response received");
+
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          const imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+          return new Response(JSON.stringify({ imageUrl }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+      }
+    } catch (err: any) {
+      console.error("Fallback model also failed:", err);
+      throw new Error(err.message || "Failed to generate illustration.");
+    }
+
+    throw new Error("No illustration generated by the AI.");
 
   } catch (error) {
     console.error("Error in generate-illustration:", error);
-    return new Response(JSON.stringify({ 
-      error: error instanceof Error ? error.message : "Failed to generate illustration" 
-    }), {
+    
+    // Handle rate limiting
+    const errorMessage = error instanceof Error ? error.message : "Failed to generate illustration";
+    if (errorMessage.includes("429") || errorMessage.includes("quota") || errorMessage.includes("rate")) {
+      return new Response(JSON.stringify({ error: "Rate limit exceeded. Please try again in a moment." }), {
+        status: 429,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    
+    return new Response(JSON.stringify({ error: errorMessage }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
