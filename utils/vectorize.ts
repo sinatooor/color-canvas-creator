@@ -1,131 +1,192 @@
 
-import { PotraceLib } from '../types';
+interface VectorizationResult {
+  outlines: string; 
+  regions: string;  
+}
 
-// Helper to access Potrace globally
-const getPotrace = (): PotraceLib | undefined => {
-  return (window as any).Potrace;
-};
-
-// Fallback loader in case index.html script fails or hasn't loaded
-async function ensurePotraceLoaded(): Promise<PotraceLib> {
-  if ((window as any).Potrace) {
-    return (window as any).Potrace;
+// Fallback loader for ImageTracer
+async function ensureImageTracerLoaded(): Promise<any> {
+  if ((window as any).ImageTracer) {
+    return (window as any).ImageTracer;
   }
 
   return new Promise((resolve, reject) => {
-    console.log("Potrace not found, attempting dynamic load...");
+    // Check if script is already present
+    if (document.querySelector('script[src*="imagetracer"]')) {
+         let checks = 0;
+         const interval = setInterval(() => {
+             if ((window as any).ImageTracer) {
+                 clearInterval(interval);
+                 resolve((window as any).ImageTracer);
+             }
+             if (checks++ > 20) {
+                 clearInterval(interval);
+                 reject(new Error("ImageTracer timeout"));
+             }
+         }, 200);
+         return;
+    }
+
+    console.log("ImageTracer not found, attempting dynamic load...");
     const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/gh/kilobtye/potrace@master/potrace.js';
+    script.src = 'https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js';
     script.onload = () => {
-      if ((window as any).Potrace) {
-        console.log("Potrace loaded successfully.");
-        resolve((window as any).Potrace);
+      if ((window as any).ImageTracer) {
+        resolve((window as any).ImageTracer);
       } else {
-        reject(new Error("Potrace loaded but global object missing"));
+        reject(new Error("ImageTracer loaded but global object missing"));
       }
     };
-    script.onerror = () => reject(new Error("Failed to load Potrace library"));
+    script.onerror = () => reject(new Error("Failed to load ImageTracer library"));
     document.head.appendChild(script);
   });
 }
 
-interface VectorizationResult {
-  outlines: string; // The black lines (visual overlay)
-  regions: string;  // The filled regions (clickable layer)
+// New signature handling ImageData directly
+export async function vectorizeImageData(imageData: ImageData): Promise<VectorizationResult> {
+    try {
+        const ImageTracer = await ensureImageTracerLoaded();
+
+        // 1. Force the input data to be strictly Opaque to avoid alpha confusion
+        const cleanData = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+        for(let i=0; i<cleanData.data.length; i+=4) {
+            cleanData.data[i+3] = 255; 
+        }
+
+        // 2. Configuration optimized for SMOOTH Vector Lines
+        const options = {
+            // Processing
+            corsenabled: false,
+            // 1.0 is a good balance for smooth illustration look
+            ltres: 1.0,         
+            qtres: 1.0,         
+            pathomit: 4,        // Reduced from 8 to 4 to catch finer lines
+            rightangleenhance: false,
+            
+            // Colors
+            colorsampling: 0,   // Deterministic
+            numberofcolors: 2,  // Black & White only
+            mincolorratio: 0,
+            colorquantcycles: 0,
+            
+            // Styling
+            strokewidth: 0,     
+            linefilter: false,
+            scale: 1,
+            viewbox: true,
+            desc: false,
+            
+            // Rounding helps smooth out sub-pixel jitter
+            roundcoords: 1, 
+            
+            // Palette (Strict B/W)
+            pal: [{r:0,g:0,b:0,a:255}, {r:255,g:255,b:255,a:255}] 
+        };
+
+        // 3. Generate SVG
+        const svgStr = ImageTracer.imagedataToSVG(cleanData, options);
+
+        // 4. Post-process to extract ONLY Black paths
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(svgStr, 'image/svg+xml');
+        const paths = Array.from(doc.querySelectorAll('path'));
+
+        const width = imageData.width;
+        const height = imageData.height;
+
+        const createNewSvg = () => {
+            const newDoc = document.implementation.createDocument('http://www.w3.org/2000/svg', 'svg', null);
+            const svg = newDoc.documentElement; 
+            svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+            svg.setAttribute('width', `${width}`);
+            svg.setAttribute('height', `${height}`);
+            // Ensure SVG doesn't capture clicks, letting them fall through to canvas
+            svg.setAttribute('style', 'pointer-events: none;'); 
+            return { doc: newDoc, svg };
+        };
+
+        const outlines = createNewSvg();
+
+        paths.forEach(p => {
+            let fill = p.getAttribute('fill');
+            if (!fill && p.style.fill) fill = p.style.fill;
+            if (!fill) fill = 'rgb(0,0,0)'; // Default
+
+            // Robust color detection
+            // ImageTracer outputs RGB(r,g,b).
+            // We want the lines. In our binary map, 0 is Black (Lines).
+            // So we want paths that are closer to Black than White.
+            
+            let isDark = false;
+            
+            // Check for RGB format
+            if (fill.startsWith('rgb')) {
+                const rgb = fill.match(/\d+/g);
+                if (rgb && rgb.length >= 3) {
+                    const r = parseInt(rgb[0]);
+                    const g = parseInt(rgb[1]);
+                    const b = parseInt(rgb[2]);
+                    isDark = (r + g + b) / 3 < 128;
+                }
+            } 
+            else if (fill.startsWith('#')) {
+                const hex = fill.replace('#', '');
+                if (hex.length === 6) {
+                    const r = parseInt(hex.substring(0, 2), 16);
+                    const g = parseInt(hex.substring(2, 4), 16);
+                    const b = parseInt(hex.substring(4, 6), 16);
+                    isDark = (r + g + b) / 3 < 128;
+                } else if (hex.length === 3) {
+                     const r = parseInt(hex[0]+hex[0], 16);
+                     const g = parseInt(hex[1]+hex[1], 16);
+                     const b = parseInt(hex[2]+hex[2], 16);
+                     isDark = (r + g + b) / 3 < 128;
+                }
+            } 
+            else if (fill.toLowerCase() === 'black') {
+                isDark = true;
+            }
+
+            // FILTER:
+            // Since we use this SVG as a MASK, opacity matters.
+            // Dark paths = Opaque (Mask Visible)
+            // Light paths = Transparent (Mask Hidden)
+            if (isDark) {
+                const clone = outlines.doc.importNode(p, true) as SVGElement;
+                clone.setAttribute('fill', '#000000'); // Force Pure Black for Mask
+                clone.setAttribute('fill-opacity', '1'); // Force Opaque
+                clone.style.stroke = 'none'; 
+                outlines.svg.appendChild(clone);
+            }
+        });
+
+        const s = new XMLSerializer();
+        const outlinesStr = s.serializeToString(outlines.doc);
+        const toBase64 = (str: string) => window.btoa(unescape(encodeURIComponent(str)));
+        
+        return {
+            outlines: `data:image/svg+xml;base64,${toBase64(outlinesStr)}`,
+            regions: "" 
+        };
+
+    } catch (err) {
+        console.error("Vectorization failed:", err);
+        throw err;
+    }
 }
 
 export async function vectorizeImage(base64Image: string): Promise<VectorizationResult> {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const Potrace = await ensurePotraceLoaded();
-
       const img = new Image();
       img.crossOrigin = 'anonymous';
       img.src = base64Image;
-      
       await new Promise((r) => { img.onload = r; });
-
-      const width = img.width;
-      const height = img.height;
-
-      // --- HELPER: Process Canvas Layer ---
-      const processLayer = (mode: 'lines' | 'regions'): Promise<string> => {
-        return new Promise((resolveLayer) => {
-             // 1. Create Canvas & Process Image Data
-             const canvas = document.createElement('canvas');
-             canvas.width = width;
-             canvas.height = height;
-             const ctx = canvas.getContext('2d');
-             if (!ctx) throw new Error("Canvas error");
-             
-             ctx.drawImage(img, 0, 0);
-             const imageData = ctx.getImageData(0, 0, width, height);
-             const data = imageData.data;
-             const THRESHOLD = 30;
-
-             // Thresholding
-             for (let i = 0; i < data.length; i += 4) {
-               const maxVal = Math.max(data[i], data[i+1], data[i+2]);
-               // If dark, it's a line (0). If light, it's space (255).
-               const val = maxVal < THRESHOLD ? 0 : 255;
-               data[i] = data[i+1] = data[i+2] = val;
-               data[i+3] = 255;
-             }
-             ctx.putImageData(imageData, 0, 0);
-
-             if (mode === 'regions') {
-                 // Dilate (Thicken black lines) strongly to separate white regions
-                 // Increasing blur radius makes lines effectively thicker
-                 ctx.filter = 'blur(2.5px)'; 
-                 ctx.drawImage(canvas, 0, 0);
-                 ctx.filter = 'none';
-                 
-                 const dilatedData = ctx.getImageData(0, 0, width, height);
-                 const dData = dilatedData.data;
-                 for (let i = 0; i < dData.length; i += 4) {
-                      // Invert for Potrace: We want to trace the White Regions, so we make them Black.
-                      // The blur makes lines gray. Any gray < 240 is treated as line (black).
-                      // This effectively expands the "line" area significantly.
-                      const val = dData[i] < 240 ? 0 : 255; 
-                      const invertedVal = val === 255 ? 0 : 255;
-                      dData[i] = dData[i+1] = dData[i+2] = invertedVal;
-                      dData[i+3] = 255;
-                 }
-                 ctx.putImageData(dilatedData, 0, 0);
-             }
-
-             // 2. Trace
-             const source = canvas.toDataURL('image/png');
-             
-             // Important: Lower turdsize for lines to catch fine details
-             Potrace.setParameter({
-                turdsize: mode === 'regions' ? 40 : 10, 
-                optcurve: true,
-                alphamax: 1,
-                blacklevel: 0.5
-             });
-
-             Potrace.loadImageFromUrl(source);
-             Potrace.process(() => {
-                 resolveLayer(Potrace.getSVG(1));
-             });
-        });
-      };
-
-      // Execute sequentially to avoid singleton state conflict
-      const outlinesSVG = await processLayer('lines');
-      const regionsSVG = await processLayer('regions');
-
-      const toBase64 = (svgStr: string) => `data:image/svg+xml;base64,${btoa(svgStr)}`;
-
-      resolve({
-          outlines: toBase64(outlinesSVG),
-          regions: toBase64(regionsSVG)
-      });
-
-    } catch (err) {
-      console.error("Vectorization failed:", err);
-      reject(err);
-    }
-  });
+      
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      if(!ctx) throw new Error("Context failed");
+      ctx.drawImage(img, 0, 0);
+      
+      return vectorizeImageData(ctx.getImageData(0,0, img.width, img.height));
 }

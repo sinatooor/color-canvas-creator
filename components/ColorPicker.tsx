@@ -23,21 +23,27 @@ const ColorPicker: React.FC<ColorPickerProps> = ({ selectedColor, onSelectColor,
     <div className="flex flex-wrap gap-2 justify-center p-4 bg-white rounded-xl shadow-inner border border-gray-100 max-h-48 overflow-y-auto no-scrollbar">
       {palette.map((color, index) => {
         const textColor = getContrastColor(color.hex);
+        const isSelected = selectedColor === color.hex;
         return (
           <button
             key={`${color.hex}-${index}`}
             onClick={() => onSelectColor(color.hex)}
-            className={`w-10 h-10 rounded-full transition-all transform hover:scale-110 focus:outline-none focus:ring-4 focus:ring-blue-200 border-2 shrink-0 flex items-center justify-center font-bold text-xs ${
-              selectedColor === color.hex ? 'border-gray-800 scale-110 shadow-lg' : 'border-transparent'
+            className={`w-10 h-10 rounded-full transition-all transform flex items-center justify-center font-bold text-xs relative ${
+              isSelected 
+                ? 'scale-110 shadow-md ring-2 ring-offset-2 ring-gray-300 z-10' 
+                : 'hover:scale-105 border border-black/5 hover:shadow-sm'
             }`}
             style={{ 
               backgroundColor: color.hex,
               color: textColor,
-              textShadow: textColor === '#ffffff' ? '0px 0px 2px rgba(0,0,0,0.5)' : 'none'
             }}
             title={color.name || color.hex}
           >
-            {index + 1}
+            {isSelected ? (
+                <i className="fa-solid fa-check"></i>
+            ) : (
+                <span className="opacity-50">{index + 1}</span>
+            )}
           </button>
         );
       })}

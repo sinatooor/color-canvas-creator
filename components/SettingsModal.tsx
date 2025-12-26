@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { ArtStyle, ComplexityLevel, GenerationSettings } from '../types';
+import { ArtStyle, ComplexityLevel, OutlineThickness, GenerationSettings } from '../types';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -29,7 +29,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
           </button>
         </div>
 
-        <div className="p-6 overflow-y-auto">
+        <div className="p-6 overflow-y-auto no-scrollbar">
           {/* Style Selector */}
           <div className="mb-8">
             <label className="block text-sm font-bold text-gray-500 uppercase tracking-wider mb-4">Art Style</label>
@@ -56,36 +56,61 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
             </div>
           </div>
 
-          {/* Complexity Slider */}
-          <div className="mb-4">
-            <label className="block text-sm font-bold text-gray-500 uppercase tracking-wider mb-4">
-              Complexity (Region Density)
-            </label>
-            <div className="bg-gray-50 p-6 rounded-2xl border border-gray-100">
-              <input 
-                type="range" 
-                min="0" 
-                max="2" 
-                step="1"
-                value={settings.complexity === 'low' ? 0 : settings.complexity === 'medium' ? 1 : 2}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value);
-                  const map: ComplexityLevel[] = ['low', 'medium', 'high'];
-                  onSave({ ...settings, complexity: map[val] });
-                }}
-                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-              />
-              <div className="flex justify-between mt-3 text-sm font-semibold text-gray-600">
-                <span className={settings.complexity === 'low' ? 'text-blue-600' : ''}>Low</span>
-                <span className={settings.complexity === 'medium' ? 'text-blue-600' : ''}>Medium</span>
-                <span className={settings.complexity === 'high' ? 'text-blue-600' : ''}>High</span>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
+              {/* Complexity Slider */}
+              <div>
+                <label className="block text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">
+                  Detail Level
+                </label>
+                <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="2" 
+                    step="1"
+                    value={settings.complexity === 'low' ? 0 : settings.complexity === 'medium' ? 1 : 2}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value);
+                      const map: ComplexityLevel[] = ['low', 'medium', 'high'];
+                      onSave({ ...settings, complexity: map[val] });
+                    }}
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                  />
+                  <div className="flex justify-between mt-3 text-xs font-bold text-gray-500">
+                    <span className={settings.complexity === 'low' ? 'text-blue-600' : ''}>Low</span>
+                    <span className={settings.complexity === 'medium' ? 'text-blue-600' : ''}>Med</span>
+                    <span className={settings.complexity === 'high' ? 'text-blue-600' : ''}>High</span>
+                  </div>
+                </div>
               </div>
-              <p className="text-xs text-gray-400 mt-4 text-center">
-                {settings.complexity === 'low' ? 'Large regions. Easy to color.' : 
-                 settings.complexity === 'medium' ? 'Balanced detail. Standard coloring book.' : 
-                 'Intricate tiny details. For professionals.'}
-              </p>
-            </div>
+
+              {/* Thickness Slider */}
+              <div>
+                <label className="block text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">
+                  Outline Thickness
+                </label>
+                <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="3" 
+                    step="1"
+                    value={settings.thickness === 'thin' ? 0 : settings.thickness === 'medium' ? 1 : settings.thickness === 'thick' ? 2 : 3}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value);
+                      const map: OutlineThickness[] = ['thin', 'medium', 'thick', 'heavy'];
+                      onSave({ ...settings, thickness: map[val] });
+                    }}
+                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-gray-800"
+                  />
+                  <div className="flex justify-between mt-3 text-xs font-bold text-gray-500">
+                    <span className={settings.thickness === 'thin' ? 'text-gray-900' : ''}>Thin</span>
+                    <span className={settings.thickness === 'medium' ? 'text-gray-900' : ''}>Med</span>
+                    <span className={settings.thickness === 'thick' ? 'text-gray-900' : ''}>Thick</span>
+                    <span className={settings.thickness === 'heavy' ? 'text-gray-900' : ''}>Bold</span>
+                  </div>
+                </div>
+              </div>
           </div>
         </div>
 
@@ -94,7 +119,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings
              onClick={onClose}
              className="w-full py-3 bg-gray-900 text-white rounded-xl font-bold hover:bg-gray-800 transition-colors"
            >
-             Done
+             Apply Settings
            </button>
         </div>
       </div>

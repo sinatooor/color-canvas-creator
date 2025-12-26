@@ -1,219 +1,218 @@
 
-import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { binarizeImageData, generateHints, checkProgress } from '../utils/imageProcessing';
-import { hexToRgb } from '../utils/floodFill'; 
-import { DrawingAction, Hint, Color, TimelapseFrame } from '../types';
+import React, { useRef, useEffect, useState, useCallback, useLayoutEffect } from 'react';
+import { Color, TimelapseFrame, RegionData, ScanlineRun } from '../types';
 import { MAX_UNDO_STEPS } from '../constants';
 import { soundEngine } from '../utils/soundEffects';
+import { computeScanlineRuns, analyzeRegionHints, RegionHint } from '../utils/labeling';
 
 interface DrawingCanvasProps {
-  imageUrl: string; 
-  outlinesUrl?: string; 
+  regionData: RegionData;
+  outlinesUrl: string;
   initialStateUrl?: string; 
+  initialRegionColors?: Record<number, string>;
   coloredIllustrationUrl: string | null;
   selectedColor: string;
+  outlineColor?: string; // New Prop
   isEraser: boolean;
   onHintClick: (colorHex: string) => void;
   onProcessingHints: (isProcessing: boolean) => void;
-  onAutoSave?: (imageDataUrl: string, timelapse?: TimelapseFrame[]) => void;
+  onAutoSave?: (imageDataUrl: string, regionColors: Record<number, string>, timelapse?: TimelapseFrame[]) => void;
   onCompletion?: (imageDataUrl: string, timelapse: TimelapseFrame[]) => void;
   palette: Color[];
   existingTimelapse?: TimelapseFrame[];
-  width?: number;
-  height?: number;
+  width: number;
+  height: number;
 }
 
 const DrawingCanvas: React.FC<DrawingCanvasProps> = ({ 
-  imageUrl, 
+  regionData, 
   outlinesUrl,
-  initialStateUrl,
   coloredIllustrationUrl,
-  selectedColor, 
+  initialRegionColors = {},
+  selectedColor,
+  outlineColor = '#000000',
   isEraser,
-  onHintClick,
   onProcessingHints,
   onAutoSave,
   onCompletion,
   palette,
   existingTimelapse,
-  width = 1024,
-  height = 1024
+  width,
+  height
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const svgContainerRef = useRef<HTMLDivElement>(null);
-  const referenceCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  
+  // Layers
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const contextRef = useRef<CanvasRenderingContext2D | null>(null);
+  const hintsCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  const [fills, setFills] = useState<Record<number, string>>({});
+  // Engine State
+  const runsRef = useRef<Map<number, ScanlineRun[]> | null>(null);
+  const hintsRef = useRef<RegionHint[]>([]);
+  const [isEngineReady, setIsEngineReady] = useState(false);
+
+  // App State
+  const [regionColors, setRegionColors] = useState<Record<number, string>>(initialRegionColors);
   const [history, setHistory] = useState<Record<number, string>[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   
-  const [svgContent, setSvgContent] = useState<string | null>(null);
-  const [hints, setHints] = useState<Hint[]>([]);
   const [ripples, setRipples] = useState<{x: number, y: number, id: number, color: string}[]>([]);
   const [showPreview, setShowPreview] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
   
   const timelapseLog = useRef<TimelapseFrame[]>([]);
 
-  // Initial Transform State: Scale to fit, positioned at 0,0 relative to origin
+  // Transform & Interaction State
   const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
   const [mode, setMode] = useState<'paint' | 'move'>('paint');
-  const [isSafeMode, setIsSafeMode] = useState(false); 
 
+  // Input Handling Refs
   const evCache = useRef<React.PointerEvent[]>([]);
   const prevDiff = useRef<number>(-1);
-  const isDragging = useRef(false);
-  const lastPoint = useRef<{x: number, y: number} | null>(null);
-  const gestureStartTime = useRef<number>(0);
-  const maxTouchesDetected = useRef<number>(0);
-  const gestureDidMove = useRef<boolean>(false);
   
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isLongPress = useRef(false);
-  const startPointerPos = useRef<{x: number, y: number} | null>(null);
+  const isPaintingRef = useRef(false);
+  const isPanningRef = useRef(false);
+  const lastPoint = useRef<{x: number, y: number} | null>(null);
+  
+  const lastPaintedRegionId = useRef<number>(-1);
+  const strokeChangesRef = useRef<Record<number, string>>({});
 
-  // 1. Initial Fit Logic
+  // 1. Initial Fit
   useEffect(() => {
     if (containerRef.current && width > 0 && height > 0) {
         const { width: cW, height: cH } = containerRef.current.getBoundingClientRect();
-        // Add some padding (20px)
         const availW = cW - 40;
         const availH = cH - 40;
-        
         const scaleX = availW / width;
         const scaleY = availH / height;
         const fitScale = Math.min(scaleX, scaleY);
-        
-        // Center the fitted image
         const x = (cW - width * fitScale) / 2;
         const y = (cH - height * fitScale) / 2;
-
         setTransform({ scale: fitScale, x, y });
     }
   }, [width, height]);
 
-  // 2. Load and Process SVG
+  // 2. Initialize Engine
   useEffect(() => {
-    if (!imageUrl) return;
-    
-    const processSvgString = (text: string) => {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(text, 'image/svg+xml');
-        const svg = doc.querySelector('svg');
-        if (!svg) return text;
+      if (!regionData || regionData.labelMap.length === 0) return;
 
-        // Force dimensions to match container
-        svg.setAttribute('width', '100%');
-        svg.setAttribute('height', '100%');
-        svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-        
-        // Inject styles
-        const style = doc.createElementNS('http://www.w3.org/2000/svg', 'style');
-        style.textContent = `
-            path, polygon, rect { 
-                fill: #ffffff; 
-                stroke: none; 
-                vector-effect: non-scaling-stroke; 
-                cursor: pointer;
-                pointer-events: all; /* Ensure clickability */
-            }
-        `;
-        svg.prepend(style);
+      const initEngine = async () => {
+          onProcessingHints(true);
+          const runs = computeScanlineRuns(regionData);
+          runsRef.current = runs;
 
-        // Split Compound Paths for Individual Coloring
-        const paths = Array.from(svg.querySelectorAll('path'));
-        paths.forEach(p => {
-            const d = p.getAttribute('d');
-            // Check if path contains multiple 'M' or 'm' commands indicating subpaths
-            if (d && (d.match(/[mM]/g) || []).length > 1) {
-                // Robust split: Split on 'M' or 'm' but keep the delimiter
-                // We use a positive lookahead regex to split BEFORE each Move command
-                const subPathStrings = d.split(/(?=[mM])/).filter(s => s.trim().length > 0);
-                
-                if (subPathStrings.length > 1) {
-                    const parent = p.parentNode;
-                    subPathStrings.forEach(sp => {
-                        const newP = doc.createElementNS('http://www.w3.org/2000/svg', 'path');
-                        newP.setAttribute('d', sp.trim());
-                        parent?.insertBefore(newP, p);
-                    });
-                    p.remove();
-                }
-            }
-        });
+          if (coloredIllustrationUrl) {
+               const img = new Image();
+               img.crossOrigin = 'anonymous';
+               img.src = coloredIllustrationUrl;
+               await new Promise(r => img.onload = r);
+               const tempCanvas = document.createElement('canvas');
+               tempCanvas.width = width;
+               tempCanvas.height = height;
+               const tempCtx = tempCanvas.getContext('2d');
+               if (tempCtx) {
+                   tempCtx.drawImage(img, 0, 0);
+                   const originalData = tempCtx.getImageData(0, 0, width, height);
+                   hintsRef.current = analyzeRegionHints(regionData, originalData, palette);
+               }
+          }
 
-        return new XMLSerializer().serializeToString(doc);
-    };
+          setIsEngineReady(true);
+          onProcessingHints(false);
+      };
 
-    if (imageUrl.startsWith('data:image/svg+xml;base64,')) {
-        try {
-            const base64 = imageUrl.split(',')[1];
-            const text = atob(base64);
-            setSvgContent(processSvgString(text));
-        } catch (e) {
-            console.error("Failed to decode SVG", e);
-        }
-    } else {
-        fetch(imageUrl)
-        .then(res => res.text())
-        .then(text => setSvgContent(processSvgString(text)))
-        .catch(err => console.error("Failed to fetch SVG", err));
-    }
-  }, [imageUrl]);
+      setTimeout(initEngine, 50);
 
-  // 3. Load Timelapse
+  }, [regionData, coloredIllustrationUrl, palette, width, height]);
+
+  // 3. Canvas Init & Restore
   useEffect(() => {
-      if (existingTimelapse) {
-          timelapseLog.current = [...existingTimelapse];
-          const initialFills: Record<number, string> = {};
-          existingTimelapse.forEach(frame => {
-              if (frame.pathIndex !== undefined) initialFills[frame.pathIndex] = frame.color;
-          });
-          setFills(initialFills);
-          setHistory([initialFills]);
-          setHistoryIndex(0);
-      } else {
-          setFills({});
-          setHistory([{}]);
+      if (!isEngineReady || !canvasRef.current) return;
+      const ctx = canvasRef.current.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+      contextRef.current = ctx;
+
+      ctx.clearRect(0, 0, width, height);
+      Object.entries(regionColors).forEach(([idStr, color]) => {
+          paintRegion(ctx, parseInt(idStr), color);
+      });
+
+      if (history.length === 0) {
+          setHistory([initialRegionColors]);
           setHistoryIndex(0);
       }
-  }, [existingTimelapse]);
+      
+      if (existingTimelapse && existingTimelapse.length > 0) {
+          timelapseLog.current = [...existingTimelapse];
+      }
 
-  // 4. Setup Reference Canvas
-  useEffect(() => {
-      if (!coloredIllustrationUrl) return;
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.src = coloredIllustrationUrl;
-      img.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = img.width;
-          canvas.height = img.height;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-              ctx.drawImage(img, 0, 0);
-              referenceCanvasRef.current = canvas;
-              onProcessingHints(true);
-              setHints(generateHints(ctx.getImageData(0,0,img.width, img.height), palette));
-              onProcessingHints(false);
-          }
-      };
-  }, [coloredIllustrationUrl, palette]);
+  }, [isEngineReady, initialRegionColors, width, height]);
 
-  // 5. Update Fills
-  useEffect(() => {
-      if (!svgContainerRef.current) return;
-      const paths = svgContainerRef.current.querySelectorAll('path');
-      paths.forEach((path, index) => {
-          path.style.fill = fills[index] || '#ffffff';
+  // 4. Smart Hints Layer ("Zen Mode")
+  // Only shows hints for the currently selected color
+  useLayoutEffect(() => {
+      const cvs = hintsCanvasRef.current;
+      if (!cvs || !isEngineReady) return;
+      const ctx = cvs.getContext('2d');
+      if (!ctx) return;
+
+      ctx.clearRect(0, 0, width, height);
+
+      // Only show hints if zoomed in slightly (performance)
+      if (transform.scale < 0.5) return;
+
+      const hints = hintsRef.current;
+      ctx.font = 'bold 16px "Outfit", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      hints.forEach(hint => {
+          // If already colored, never show hint
+          if (regionColors[hint.regionId]) return;
+
+          const isMatchingColor = palette[hint.paletteIndex]?.hex === selectedColor;
+          
+          // "Zen Mode": Only show the hint if it matches the current marker
+          if (isMatchingColor) {
+              // Draw a prominent bubble
+              ctx.fillStyle = '#ffffff'; 
+              ctx.beginPath();
+              ctx.arc(hint.x, hint.y, 14, 0, Math.PI * 2);
+              ctx.fillStyle = selectedColor;
+              ctx.fill();
+              
+              // White border for contrast
+              ctx.lineWidth = 2;
+              ctx.strokeStyle = '#fff';
+              ctx.stroke();
+
+              // Text
+              ctx.fillStyle = '#ffffff';
+              ctx.fillText((hint.paletteIndex + 1).toString(), hint.x, hint.y);
+          } 
+          // Else: Don't draw anything to keep it clean!
       });
-  }, [fills, svgContent]);
 
-  // History & Save Actions
-  const saveToHistory = useCallback((newFills: Record<number, string>) => {
+  }, [transform.scale, regionColors, selectedColor, isEngineReady, width, height, palette]);
+
+  const paintRegion = useCallback((ctx: CanvasRenderingContext2D, regionId: number, color: string) => {
+      if (!runsRef.current) return;
+      const runs = runsRef.current.get(regionId);
+      if (!runs) return;
+
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      for (const [y, xStart, xEnd] of runs) {
+          ctx.rect(xStart, y, (xEnd - xStart) + 1, 1);
+      }
+      ctx.fill();
+  }, []);
+
+  const saveHistoryStep = useCallback((mergedColors: Record<number, string>) => {
       const newHistory = history.slice(0, historyIndex + 1);
       if (newHistory.length >= MAX_UNDO_STEPS) newHistory.shift();
-      newHistory.push(newFills);
+      newHistory.push(mergedColors);
       setHistory(newHistory);
       setHistoryIndex(newHistory.length - 1);
   }, [history, historyIndex]);
@@ -221,233 +220,218 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const undo = useCallback(() => {
       if (historyIndex > 0) {
           const newIndex = historyIndex - 1;
-          setFills(history[newIndex]);
+          const prevColors = history[newIndex];
+          setRegionColors(prevColors);
           setHistoryIndex(newIndex);
           timelapseLog.current.pop();
+          
+          const ctx = contextRef.current;
+          if (ctx) {
+             ctx.clearRect(0, 0, width, height);
+             Object.entries(prevColors).forEach(([idStr, color]) => {
+                paintRegion(ctx, parseInt(idStr), color);
+             });
+          }
       }
-  }, [historyIndex, history]);
+  }, [historyIndex, history, width, height, paintRegion]);
 
   const generateCompositeImage = useCallback(async () => {
-      if (!svgContainerRef.current) return '';
-      const svgEl = svgContainerRef.current.querySelector('svg');
-      if (!svgEl) return '';
-
-      const s = new XMLSerializer();
-      const str = s.serializeToString(svgEl);
-      const svgBlob = new Blob([str], {type: 'image/svg+xml;charset=utf-8'});
-      const url = URL.createObjectURL(svgBlob);
-
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = width;
+      tempCanvas.height = height;
+      const ctx = tempCanvas.getContext('2d');
       if (!ctx) return '';
 
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, width, height);
 
-      const img = new Image();
-      img.src = url;
-      await new Promise(r => img.onload = r);
-      ctx.drawImage(img, 0, 0, width, height);
+      if (canvasRef.current) {
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.drawImage(canvasRef.current, 0, 0);
+          ctx.globalCompositeOperation = 'source-over';
+      }
 
       if (outlinesUrl) {
-          const outlines = new Image();
-          outlines.src = outlinesUrl;
-          outlines.crossOrigin = 'anonymous';
-          await new Promise(r => outlines.onload = r);
-          ctx.drawImage(outlines, 0, 0, width, height);
+          const img = new Image();
+          img.src = outlinesUrl;
+          img.crossOrigin = 'anonymous';
+          await new Promise(r => img.onload = r);
+          // Standard Draw for Save
+          ctx.drawImage(img, 0, 0, width, height);
       }
-      URL.revokeObjectURL(url);
-      return canvas.toDataURL('image/png');
+
+      return tempCanvas.toDataURL('image/png');
   }, [outlinesUrl, width, height]);
 
+  // Auto-Save
   useEffect(() => {
       if (!onAutoSave) return;
       const interval = setInterval(async () => {
-          if (Object.keys(fills).length > 0 && !isCompleted) {
+          if (Object.keys(regionColors).length > 0 && !isCompleted) {
               const url = await generateCompositeImage();
-              onAutoSave(url, timelapseLog.current);
+              onAutoSave(url, regionColors, timelapseLog.current);
           }
       }, 10000);
       return () => clearInterval(interval);
-  }, [onAutoSave, fills, isCompleted, generateCompositeImage]);
+  }, [onAutoSave, regionColors, isCompleted, generateCompositeImage]);
 
-  // --- Interaction Handlers ---
+  // --- Interaction Core ---
+
+  const getRegionIdAtEvent = (e: React.PointerEvent) => {
+      if (!containerRef.current) return -1;
+      const rect = containerRef.current.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const imageX = Math.floor((mouseX - transform.x) / transform.scale);
+      const imageY = Math.floor((mouseY - transform.y) / transform.scale);
+
+      if (imageX < 0 || imageX >= width || imageY < 0 || imageY >= height) return -1;
+      return regionData.labelMap[imageY * width + imageX];
+  };
+
+  const applyPaintToRegion = (regionId: number, clientX: number, clientY: number) => {
+      if (regionId <= 0) return;
+
+      const colorToUse = isEraser ? 'TRANSPARENT' : selectedColor;
+      const ctx = contextRef.current;
+      if (!ctx) return;
+
+      if (isEraser) {
+          ctx.globalCompositeOperation = 'destination-out';
+          ctx.fillStyle = 'black'; 
+          paintRegion(ctx, regionId, 'black');
+          ctx.globalCompositeOperation = 'source-over';
+      } else {
+          paintRegion(ctx, regionId, colorToUse);
+      }
+
+      soundEngine.playPop();
+      addRipple(clientX, clientY, isEraser ? 'gray' : selectedColor);
+
+      setRegionColors(prev => {
+          const next = { ...prev };
+          if (isEraser) delete next[regionId];
+          else next[regionId] = colorToUse;
+          strokeChangesRef.current = next; 
+          return next;
+      });
+
+      timelapseLog.current.push({ x: 0, y: 0, regionId, color: colorToUse });
+  };
+
+  const checkCompletion = () => {
+      const coloredCount = Object.keys(regionColors).length;
+      if (regionData.maxRegionId > 10 && coloredCount > regionData.maxRegionId * 0.95 && !isCompleted) {
+          setIsCompleted(true);
+          soundEngine.playCheer();
+          if (onCompletion) generateCompositeImage().then(url => onCompletion(url, timelapseLog.current));
+      }
+  };
 
   const handlePointerDown = (e: React.PointerEvent) => {
-    soundEngine.init();
-    evCache.current.push(e);
     containerRef.current?.setPointerCapture(e.pointerId);
-    startPointerPos.current = { x: e.clientX, y: e.clientY };
-
-    if (evCache.current.length === 1) {
-        gestureStartTime.current = Date.now();
-        maxTouchesDetected.current = 1;
-        gestureDidMove.current = false;
-    } else {
-        maxTouchesDetected.current = Math.max(maxTouchesDetected.current, evCache.current.length);
-    }
-
-    const isPen = e.pointerType === 'pen';
+    evCache.current.push(e);
+    
     const isMultiTouch = evCache.current.length > 1;
+    const isMoveMode = mode === 'move' || e.button === 1;
 
-    if (isMultiTouch) {
-      if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    if (isMoveMode || isMultiTouch) {
+        isPanningRef.current = true;
+        isPaintingRef.current = false;
+        lastPoint.current = { x: e.clientX, y: e.clientY };
+    } else {
+        isPaintingRef.current = true;
+        isPanningRef.current = false;
+        strokeChangesRef.current = { ...regionColors };
+        
+        const rid = getRegionIdAtEvent(e);
+        if (rid > 0) {
+            lastPaintedRegionId.current = rid;
+            applyPaintToRegion(rid, e.clientX, e.clientY);
+        }
     }
-
-    if (mode === 'move' || isMultiTouch || e.button === 1 || e.shiftKey) {
-      isDragging.current = true;
-      lastPoint.current = { x: e.clientX, y: e.clientY };
-      return;
-    }
-
-    isLongPress.current = false;
-    longPressTimer.current = setTimeout(() => {
-      isLongPress.current = true;
-      setShowPreview(true);
-    }, 600);
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    const index = evCache.current.findIndex((cachedEv) => cachedEv.pointerId === e.pointerId);
+    const index = evCache.current.findIndex(ev => ev.pointerId === e.pointerId);
     if (index > -1) evCache.current[index] = e;
 
-    if (startPointerPos.current) {
-        const dist = Math.hypot(e.clientX - startPointerPos.current.x, e.clientY - startPointerPos.current.y);
-        if (dist > 8) {
-             if (longPressTimer.current) clearTimeout(longPressTimer.current);
-             if (dist > 15) gestureDidMove.current = true; 
+    if (isPanningRef.current) {
+        if (evCache.current.length === 2) {
+             const curDiff = Math.hypot(
+                evCache.current[0].clientX - evCache.current[1].clientX,
+                evCache.current[0].clientY - evCache.current[1].clientY
+             );
+             if (prevDiff.current > 0) {
+                 const delta = curDiff - prevDiff.current;
+                 setTransform(t => ({
+                     ...t,
+                     scale: Math.min(Math.max(0.1, t.scale + delta * 0.005), 8)
+                 }));
+             }
+             prevDiff.current = curDiff;
+        } else if (lastPoint.current) {
+             const dx = e.clientX - lastPoint.current.x;
+             const dy = e.clientY - lastPoint.current.y;
+             setTransform(t => ({ ...t, x: t.x + dx, y: t.y + dy }));
+             lastPoint.current = { x: e.clientX, y: e.clientY };
         }
+        return;
     }
 
-    if (evCache.current.length === 2) {
-      const curDiff = Math.hypot(
-        evCache.current[0].clientX - evCache.current[1].clientX,
-        evCache.current[0].clientY - evCache.current[1].clientY
-      );
-      if (prevDiff.current > 0) {
-        const delta = curDiff - prevDiff.current;
-        setTransform(prev => ({
-          ...prev,
-          scale: Math.min(Math.max(0.1, prev.scale + delta * 0.005), 8)
-        }));
-      }
-      prevDiff.current = curDiff;
-      return;
-    }
-
-    if (isDragging.current && lastPoint.current) {
-      const deltaX = e.clientX - lastPoint.current.x;
-      const deltaY = e.clientY - lastPoint.current.y;
-      setTransform(prev => ({ ...prev, x: prev.x + deltaX, y: prev.y + deltaY }));
-      lastPoint.current = { x: e.clientX, y: e.clientY };
+    if (isPaintingRef.current) {
+        const rid = getRegionIdAtEvent(e);
+        if (rid > 0 && rid !== lastPaintedRegionId.current) {
+            lastPaintedRegionId.current = rid;
+            applyPaintToRegion(rid, e.clientX, e.clientY);
+        }
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    if (longPressTimer.current) clearTimeout(longPressTimer.current);
-    const isTracked = evCache.current.some(ev => ev.pointerId === e.pointerId);
-
-    if (evCache.current.length === 2 && maxTouchesDetected.current === 2 && !gestureDidMove.current) {
-        undo();
-        addRipple(e.clientX, e.clientY, 'gray');
+    if (isPaintingRef.current) {
+        saveHistoryStep(strokeChangesRef.current);
+        checkCompletion();
     }
 
-    if (isLongPress.current) {
-      setShowPreview(false);
-      isLongPress.current = false;
-    } else {
-        const isPen = e.pointerType === 'pen';
-        const isClick = !isDragging.current && !gestureDidMove.current && evCache.current.length < 2 && isTracked;
-        const shouldPaint = (mode === 'paint' || isPen) && isClick;
-        
-        if (shouldPaint) {
-            // Temporarily hide overlays to perform hit test on SVG elements
-            const overlay = document.getElementById('outline-overlay');
-            if (overlay) overlay.style.display = 'none';
-            const preview = document.getElementById('preview-overlay');
-            if (preview) preview.style.display = 'none';
-            
-            const target = document.elementFromPoint(e.clientX, e.clientY);
-            
-            if (overlay) overlay.style.display = 'block';
-            if (preview) preview.style.display = (showPreview ? 'block' : 'none');
-
-            if (target && target.tagName.toLowerCase() === 'path' && svgContainerRef.current?.contains(target)) {
-                const paths = Array.from(svgContainerRef.current.querySelectorAll('path'));
-                const pathIndex = paths.indexOf(target as SVGPathElement);
-                
-                if (pathIndex !== -1) {
-                    const colorToUse = isEraser ? '#ffffff' : selectedColor;
-                    const newFills = { ...fills, [pathIndex]: colorToUse };
-                    setFills(newFills);
-                    saveToHistory(newFills);
-                    
-                    soundEngine.playPop();
-                    addRipple(e.clientX, e.clientY, isEraser ? 'gray' : selectedColor);
-                    timelapseLog.current.push({ x: 0, y: 0, pathIndex, color: colorToUse });
-
-                    // Improved Completion Logic
-                    // 1. Must have substantial number of paths to avoid "1-click completion" on bad vectorization
-                    // 2. Must cover > 95% of regions
-                    if (!isEraser && paths.length > 5 && Object.keys(newFills).length > paths.length * 0.95) {
-                       if (!isCompleted) checkCompletionStrict();
-                    }
-                }
-            }
-        }
-    }
-
-    const index = evCache.current.findIndex((cachedEv) => cachedEv.pointerId === e.pointerId);
+    isPaintingRef.current = false;
+    isPanningRef.current = false;
+    lastPaintedRegionId.current = -1;
+    lastPoint.current = null;
+    prevDiff.current = -1;
+    
+    const index = evCache.current.findIndex(ev => ev.pointerId === e.pointerId);
     if (index > -1) evCache.current.splice(index, 1);
-    if (evCache.current.length < 2) prevDiff.current = -1;
-    if (evCache.current.length === 0) {
-      isDragging.current = false;
-      lastPoint.current = null;
-    }
-  };
-
-  const checkCompletionStrict = () => {
-       setIsCompleted(true);
-       soundEngine.playCheer();
-       if (onCompletion) {
-           generateCompositeImage().then(url => onCompletion(url, timelapseLog.current));
-       }
   };
 
   const addRipple = (x: number, y: number, color: string) => {
     const rect = containerRef.current?.getBoundingClientRect();
     if(rect) {
-        const id = Date.now();
+        const id = Date.now() + Math.random();
         setRipples(prev => [...prev, { x: x - rect.left, y: y - rect.top, id, color }]);
         setTimeout(() => setRipples(prev => prev.filter(r => r.id !== id)), 600);
     }
-  };
-
-  const download = async () => {
-      const url = await generateCompositeImage();
-      const link = document.createElement('a');
-      link.download = 'my-art.png';
-      link.href = url;
-      link.click();
   };
 
   const resetView = () => {
     if (containerRef.current) {
         const { width: cW, height: cH } = containerRef.current.getBoundingClientRect();
         const scale = Math.min((cW-40)/width, (cH-40)/height);
-        setTransform({ 
-            scale, 
-            x: (cW - width * scale) / 2, 
-            y: (cH - height * scale) / 2 
-        });
+        setTransform({ scale, x: (cW - width * scale) / 2, y: (cH - height * scale) / 2 });
     }
+  };
+
+  const download = async () => {
+      const url = await generateCompositeImage();
+      const link = document.createElement('a');
+      link.download = 'FifoColor_Art.png';
+      link.href = url;
+      link.click();
   };
 
   return (
     <div className="flex flex-col items-center gap-4 w-full">
-      {/* Controls UI */}
+      {/* Controls */}
       <div className="glass-panel rounded-full px-4 py-2 flex items-center gap-4 shadow-lg mb-2 z-10 flex-wrap justify-center">
         <div className="flex bg-gray-100 rounded-full p-1">
           <button
@@ -468,17 +452,22 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             <i className="fa-solid fa-up-down-left-right mr-2"></i> Move
           </button>
         </div>
-        <button
-            onClick={() => setIsSafeMode(!isSafeMode)}
-            className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-sm font-bold transition-all border ${
-                isSafeMode ? 'bg-green-100 text-green-700' : 'bg-white text-gray-500'
-            }`}
-        >
-            <i className={`fa-solid ${isSafeMode ? 'fa-shield-halved' : 'fa-shield'}`}></i>
-            <span className="hidden sm:inline">Safe Mode</span>
-        </button>
         <div className="w-px h-6 bg-gray-300"></div>
-        <div className="flex gap-2 text-gray-600">
+        <div className="flex gap-2 text-gray-600 items-center">
+           {coloredIllustrationUrl && (
+             <>
+                <button 
+                  onClick={() => setShowPreview(!showPreview)} 
+                  className={`w-8 h-8 rounded-full transition-all flex items-center justify-center ${
+                    showPreview ? 'bg-purple-500 text-white shadow-md' : 'hover:bg-gray-100 text-gray-500'
+                  }`}
+                  title="Toggle Reference Image"
+                >
+                  <i className={`fa-solid ${showPreview ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                </button>
+                <div className="w-px h-6 bg-gray-300 mx-1"></div>
+             </>
+           )}
            <button onClick={() => setTransform(t => ({...t, scale: t.scale * 0.8}))} className="w-8 h-8 hover:bg-gray-100 rounded-full"><i className="fa-solid fa-minus"></i></button>
            <button onClick={() => setTransform(t => ({...t, scale: t.scale * 1.2}))} className="w-8 h-8 hover:bg-gray-100 rounded-full"><i className="fa-solid fa-plus"></i></button>
            <button onClick={resetView} className="w-8 h-8 hover:bg-gray-100 rounded-full text-blue-500"><i className="fa-solid fa-compress"></i></button>
@@ -492,9 +481,9 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
-        onPointerLeave={() => isDragging.current = false}
+        onPointerCancel={handlePointerUp}
+        onPointerLeave={handlePointerUp}
       >
-        {/* The Scalable Canvas Wrapper */}
         <div
           style={{
             transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
@@ -505,37 +494,59 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             top: 0,
             left: 0,
             backgroundColor: '#ffffff',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
+            boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
+            backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.08'/%3E%3C/svg%3E")`
           }}
         >
-            {/* Preview Layer (Z-20) */}
-            {coloredIllustrationUrl && showPreview && (
-                <img 
-                    id="preview-overlay"
-                    src={coloredIllustrationUrl} 
-                    className="absolute inset-0 w-full h-full object-cover z-20 pointer-events-none" 
-                />
-            )}
-
-            {/* Layer 1: The Clickable Regions SVG (Z-0) */}
-            <div 
-                ref={svgContainerRef}
-                className="absolute inset-0 w-full h-full z-0"
-                dangerouslySetInnerHTML={{ __html: svgContent || '' }}
+            {/* LAYER 1: Fill Canvas (Multiply Blend for ink effect) */}
+            <canvas 
+                ref={canvasRef}
+                width={width}
+                height={height}
+                className="absolute inset-0 z-0"
+                style={{ imageRendering: 'pixelated', mixBlendMode: 'multiply' }}
+            />
+            
+            {/* LAYER 2: Hints Canvas (Dynamic Zen Mode) */}
+            <canvas 
+                ref={hintsCanvasRef}
+                width={width}
+                height={height}
+                className="absolute inset-0 z-10 pointer-events-none transition-opacity duration-300"
+                style={{ 
+                    opacity: transform.scale < 0.5 ? 0 : 1 
+                }}
             />
 
-            {/* Layer 2: The Outline Overlay (Z-10) */}
+            {/* LAYER 3: Outline Overlay (CSS Mask for Dynamic Color & Perfect Opacity) */}
             {outlinesUrl && (
+                <div 
+                    id="OutlineLayer"
+                    className="absolute inset-0 w-full h-full z-20" 
+                    style={{ 
+                        pointerEvents: 'none',
+                        maskImage: `url("${outlinesUrl}")`,
+                        WebkitMaskImage: `url("${outlinesUrl}")`,
+                        maskSize: '100% 100%',
+                        WebkitMaskSize: '100% 100%',
+                        maskRepeat: 'no-repeat',
+                        WebkitMaskRepeat: 'no-repeat',
+                        backgroundColor: outlineColor
+                    }}
+                />
+            )}
+            
+            {/* LAYER 4: Reference Preview */}
+            {coloredIllustrationUrl && showPreview && (
                 <img 
-                    id="outline-overlay"
-                    src={outlinesUrl} 
-                    className="absolute inset-0 w-full h-full object-cover z-10 pointer-events-none" 
-                    alt="outlines"
+                    id="PreviewLayer"
+                    src={coloredIllustrationUrl} 
+                    className="absolute inset-0 w-full h-full object-cover z-30 opacity-90"
+                    style={{ pointerEvents: 'none' }} 
                 />
             )}
         </div>
 
-        {/* Ripples */}
         {ripples.map(r => (
             <div 
                 key={r.id}
@@ -548,8 +559,8 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             />
         ))}
       </div>
-
-      {/* Footer Controls */}
+      
+      {/* Undo / Save Buttons */}
       <div className="flex gap-4">
         <button onClick={undo} disabled={historyIndex <= 0} className="glass-panel px-8 py-3 rounded-full font-bold text-gray-600">
             <i className="fa-solid fa-rotate-left mr-2"></i> Undo

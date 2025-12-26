@@ -48,9 +48,7 @@ const ProjectsGallery: React.FC<ProjectsGalleryProps> = ({ isOpen, onClose, user
         userId: user.id,
         name: `${project.name} (Redo)`,
         thumbnailUrl: project.thumbnailUrl, // Use original thumbnail preview
-        vectorUrl: project.vectorUrl,
-        originalUrl: project.originalUrl,
-        palette: project.palette,
+        bundle: project.bundle, // Reuse the bundle
         // Explicitly undefined currentStateUrl to start fresh
         currentStateUrl: undefined, 
         isFinished: false 

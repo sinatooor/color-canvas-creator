@@ -2,16 +2,50 @@
 import { GoogleGenAI } from "@google/genai";
 import { ArtStyle, ComplexityLevel } from "../types";
 
+// Helper to resize image to prevent payload issues (Max 1024px)
+async function resizeImage(base64Str: string, maxDim: number = 1024): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = base64Str;
+    img.onload = () => {
+      let w = img.width;
+      let h = img.height;
+      
+      if (w > maxDim || h > maxDim) {
+        if (w > h) {
+          h = Math.round((h * maxDim) / w);
+          w = maxDim;
+        } else {
+          w = Math.round((w * maxDim) / h);
+          h = maxDim;
+        }
+      }
+      
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, w, h);
+        // Use JPEG with 0.85 quality to reduce base64 string size significantly
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      } else {
+        resolve(base64Str); // Fallback to original
+      }
+    };
+    img.onerror = () => resolve(base64Str);
+  });
+}
+
 export async function transformToIllustration(
   base64Image: string, 
   style: ArtStyle = 'classic', 
   complexity: ComplexityLevel = 'medium'
 ): Promise<string> {
-  // Always create a new instance to ensure the latest API key is used
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
-  // Extract mime type and data from base64
-  const matches = base64Image.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+  const optimizedBase64 = await resizeImage(base64Image, 1024);
+
+  const matches = optimizedBase64.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
   if (!matches || matches.length !== 3) {
     throw new Error("Invalid image format");
   }
@@ -19,7 +53,6 @@ export async function transformToIllustration(
   const mimeType = matches[1];
   const imageData = matches[2];
 
-  // --- STYLE CONFIGURATION ---
   const stylePrompts: Record<ArtStyle, string> = {
     classic: "Paint by Numbers style. Clean, distinct organic shapes. Balanced composition.",
     stained_glass: "Stained Glass window style. Thick, geometric black leading lines. Jewel-tone flat colors. Angular segmentation.",
@@ -27,7 +60,6 @@ export async function transformToIllustration(
     anime: "Anime/Manga Line Art style. Clean, thin, uniform lines. Focus on character outlines and minimal background noise. Cel-shaded look."
   };
 
-  // --- COMPLEXITY CONFIGURATION ---
   const complexityConfig: Record<ComplexityLevel, { max: string, min: string }> = {
     low: { max: "5%", min: "1%" },      
     medium: { max: "2%", min: "0.3%" }, 
@@ -37,54 +69,126 @@ export async function transformToIllustration(
   const selectedStyle = stylePrompts[style];
   const selectedComplexity = complexityConfig[complexity];
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-image-preview',
-    contents: {
-      parts: [
-        {
-          inlineData: {
-            data: imageData,
-            mimeType: mimeType,
-          },
-        },
-        {
-          text: `You are an expert technical illustrator creating a source image for a coloring app.
+  const promptText = `You are an expert technical illustrator creating a source image for a coloring app.
 
-          TASK: Convert this image into a "${style}" style illustration.
-          
-          STYLE GUIDELINES:
-          ${selectedStyle}
-          
-          STRICT VISUAL REQUIREMENTS:
-          1. **Pre-Colored**: The output must be FULLY COLORED with flat, solid colors.
-          2. **Black Outlines**: Every single color region must be separated by a BOLD, PURE BLACK (#000000) stroke.
-          3. **NO TEXTURE**: Do not use stippling, hatching, cross-hatching, or noise.
-          4. **Segmentation Rules**: 
-             - Divide the image into distinct cells.
-             - **Max Region Size**: No single region should be larger than ${selectedComplexity.max} of the canvas.
-             - **Min Region Size**: No region should be smaller than ${selectedComplexity.min}.
-          5. **Color Palette**: Limit to 32-64 distinct colors.
-             **CRITICAL**: DO NOT USE DARK COLORS. All fill colors MUST have a luminance greater than 30%. Dark Brown, Dark Navy, Black, etc., are STRICTLY FORBIDDEN for fills. Use lighter, pastel, or vibrant variations instead. The only dark element in the image should be the outlines.
-          6. **Resolution**: 2K resolution.
-          
-          The result should look like a professional coloring page template where the lines are clearly distinguishable from the fill colors.
-          `,
-        },
-      ],
-    },
-    config: {
-      imageConfig: {
-        imageSize: "2K",
-        aspectRatio: "1:1"
+TASK: Convert this image into a "${style}" style illustration.
+
+STYLE GUIDELINES:
+${selectedStyle}
+
+STRICT VISUAL REQUIREMENTS:
+1. **Pre-Colored**: The output must be FULLY COLORED with flat, solid colors.
+2. **Black Outlines**: Every single color region must be separated by a **THICK, BOLD, PURE BLACK (#000000)** stroke.
+3. **Segmentation**:
+   - **Max Region Size**: ${selectedComplexity.max} of canvas.
+   - **Min Region Size**: ${selectedComplexity.min} of canvas.
+4. **Color Palette**: Limit to 32 distinct colors. DO NOT USE DARK COLORS for fills.
+
+NEGATIVE PROMPT (STRICTLY FORBIDDEN):
+- NO shading, NO gradients, NO shadows.
+- NO cross-hatching, NO stippling, NO dot textures.
+- NO noise, NO sketchy lines.
+- NO realistic photo details.
+- NO grayscale.
+
+The result should look like a professional vector coloring page template where the thick black lines are clearly distinguishable from the fill colors.`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-pro-image-preview',
+      contents: {
+        parts: [
+          { inlineData: { data: imageData, mimeType: mimeType } },
+          { text: promptText + "\n\nResolution: 2K." }
+        ],
+      },
+      config: {
+        imageConfig: { imageSize: "2K", aspectRatio: "1:1" }
+      }
+    });
+
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData) {
+        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
       }
     }
-  });
+  } catch (err) {
+    console.warn("Pro model failed, attempting fallback...", err);
+  }
 
-  for (const part of response.candidates?.[0]?.content?.parts || []) {
-    if (part.inlineData) {
-      return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+  // Fallback
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: {
+        parts: [
+          { inlineData: { data: imageData, mimeType: mimeType } },
+          { text: promptText }
+        ],
+      },
+      config: { imageConfig: { aspectRatio: "1:1" } }
+    });
+
+    for (const part of response.candidates?.[0]?.content?.parts || []) {
+      if (part.inlineData) {
+        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+      }
     }
+  } catch (err: any) {
+    throw new Error(err.message || "Failed to generate illustration.");
   }
 
   throw new Error("No illustration generated by the AI.");
+}
+
+export async function transformToLineArt(base64Image: string): Promise<string> {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const optimizedBase64 = await resizeImage(base64Image, 1024);
+
+  const matches = optimizedBase64.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+  if (!matches || matches.length !== 3) throw new Error("Invalid image format");
+  const mimeType = matches[1];
+  const imageData = matches[2];
+
+  const prompt = `Convert this colored illustration into a strict BLACK AND WHITE coloring page.
+
+REQUIREMENTS:
+1. **Remove ALL Color**: The result must be purely Black lines on a White background.
+2. **Line Quality**: Lines must be SOLID and UNIFORM thickness.
+3. **Clean Up**: Remove any stray pixels, noise, or compression artifacts.
+
+NEGATIVE PROMPT (CRITICAL):
+- **NO GRAYSCALE**: Pixels must be strictly #000000 or #FFFFFF.
+- **NO SHADING**: Remove all shadow rendering.
+- **NO HATCHING**: Do not use texture to represent shade.
+- **NO STIPPLING**: Do not use dots.
+- **NO DITHERING**.
+
+Output a clean, vector-style line art image suitable for a coloring book.`;
+
+  try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+            parts: [
+                { inlineData: { data: imageData, mimeType } },
+                { text: prompt }
+            ]
+        },
+        config: {
+            imageConfig: { aspectRatio: "1:1" }
+        }
+      });
+      
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+            return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+        }
+      }
+  } catch (err: any) {
+      console.error("Line art generation failed:", err);
+      throw new Error("Failed to generate line art.");
+  }
+  
+  throw new Error("No line art generated.");
 }

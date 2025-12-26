@@ -1,17 +1,16 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { AppState, Color, User, GenerationSettings, SavedProject, TimelapseFrame } from './types';
-import { transformToIllustration } from './services/geminiService';
-import { vectorizeImage } from './utils/vectorize';
-import { extractPalette } from './utils/imageProcessing';
+import { AppState, User, GenerationSettings, SavedProject, TimelapseFrame, ProjectBundle, OutlineThickness } from './types';
 import { storageService } from './services/storageService';
+import { useJobProcessor } from './hooks/useJobProcessor';
+import { outlineService } from './services/outlineService';
+import { computeLabelMap } from './utils/labeling';
 import DrawingCanvas from './components/DrawingCanvas';
 import ColorPicker from './components/ColorPicker';
 import AuthModal from './components/AuthModal';
 import SettingsModal from './components/SettingsModal';
 import ProjectsGallery from './components/ProjectsGallery';
 import CompletionModal from './components/CompletionModal';
-import { DEFAULT_PALETTE } from './constants';
 
 declare global {
   interface AIStudio {
@@ -24,14 +23,34 @@ declare global {
 }
 
 const App: React.FC = () => {
-  // App State
+  // --- Architecture: Separation of Concerns ---
+  // The UI Layer (App.tsx) only handles View State. 
+  // The Logic Layer (useJobProcessor) handles the AI/Image Pipeline.
+  const { activeJob, error: jobError, startJob, resetJob } = useJobProcessor();
+
+  // --- State: Application Flow ---
   const [state, setState] = useState<AppState>('idle');
-  const [error, setError] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string>('');
   
-  // User State
+  // --- State: Editor Context ---
+  const [activeBundle, setActiveBundle] = useState<ProjectBundle | null>(null);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  
+  // Editor Session State
+  const [selectedColor, setSelectedColor] = useState('#3b82f6');
+  const [outlineColor, setOutlineColor] = useState('#000000'); // Default Black Outlines
+  const [isEraser, setIsEraser] = useState(false);
+  const [processingHints, setProcessingHints] = useState(false);
+  const [finalImage, setFinalImage] = useState<string>('');
+  const [finalTimelapse, setFinalTimelapse] = useState<TimelapseFrame[]>([]);
+  
+  const [currentRegionColors, setCurrentRegionColors] = useState<Record<number, string>>({});
+  const [currentTimelapse, setCurrentTimelapse] = useState<TimelapseFrame[] | undefined>(undefined);
+  const [initialStateUrl, setInitialStateUrl] = useState<string | undefined>(undefined);
+
+  // --- State: User & UI ---
   const [user, setUser] = useState<User | null>(null);
   const [hasApiKey, setHasApiKey] = useState(false);
+  const [uiError, setUiError] = useState<string | null>(null);
 
   // Modals
   const [showAuth, setShowAuth] = useState(false);
@@ -43,27 +62,9 @@ const App: React.FC = () => {
   // Settings
   const [genSettings, setGenSettings] = useState<GenerationSettings>({
     style: 'classic',
-    complexity: 'medium'
+    complexity: 'medium',
+    thickness: 'medium'
   });
-
-  // Editor State
-  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
-  const [illustrationUrl, setIllustrationUrl] = useState<string | null>(null);
-  const [outlinesUrl, setOutlinesUrl] = useState<string | undefined>(undefined);
-  
-  // New: Store image dimensions for perfect layer alignment
-  const [imageDimensions, setImageDimensions] = useState<{width: number, height: number} | undefined>(undefined);
-
-  const [initialStateUrl, setInitialStateUrl] = useState<string | undefined>(undefined);
-  const [coloredIllustrationUrl, setColoredIllustrationUrl] = useState<string | null>(null);
-  const [originalImageUrl, setOriginalImageUrl] = useState<string | null>(null); 
-  const [selectedColor, setSelectedColor] = useState('#3b82f6');
-  const [palette, setPalette] = useState<Color[]>(DEFAULT_PALETTE);
-  const [isEraser, setIsEraser] = useState(false);
-  const [processingHints, setProcessingHints] = useState(false);
-  const [finalImage, setFinalImage] = useState<string>('');
-  const [finalTimelapse, setFinalTimelapse] = useState<TimelapseFrame[]>([]);
-  const [currentTimelapse, setCurrentTimelapse] = useState<TimelapseFrame[] | undefined>(undefined);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -75,6 +76,18 @@ const App: React.FC = () => {
     checkApiKey();
     checkUserSession();
   }, []);
+
+  // Sync Job Error to UI Error
+  useEffect(() => {
+    if (jobError) {
+        if (jobError.includes("API key")) {
+            setUiError("Invalid API Key. Please select your key again.");
+            setHasApiKey(false);
+        } else {
+            setUiError(jobError);
+        }
+    }
+  }, [jobError]);
 
   const checkApiKey = async () => {
     if (window.aistudio?.hasSelectedApiKey) {
@@ -94,8 +107,35 @@ const App: React.FC = () => {
     if (window.aistudio?.openSelectKey) {
       await window.aistudio.openSelectKey();
       setHasApiKey(true);
-      setError(null);
+      setUiError(null);
     }
+  };
+
+  // --- Process Flow ---
+
+  const handleProcessImage = (base64: string) => {
+      // Reset Editor State
+      setCurrentProjectId(null); 
+      setInitialStateUrl(undefined);
+      setCurrentTimelapse(undefined);
+      setCurrentRegionColors({});
+      setUiError(null);
+      setOutlineColor('#000000'); // Reset outline color
+
+      // Start Pipeline
+      setState('job_running');
+      startJob(base64, genSettings, (bundle) => {
+          // Success Callback
+          setTimeout(() => {
+            loadBundleIntoEditor(bundle);
+          }, 800);
+      });
+  };
+
+  const loadBundleIntoEditor = (bundle: ProjectBundle) => {
+    setActiveBundle(bundle);
+    setSelectedColor(bundle.palette[0]?.hex || '#000000');
+    setState('editor');
   };
 
   // --- Actions ---
@@ -113,66 +153,9 @@ const App: React.FC = () => {
     const reader = new FileReader();
     reader.onload = async (e) => {
       const base64 = e.target?.result as string;
-      setOriginalImageUrl(base64);
-      processImage(base64);
+      handleProcessImage(base64);
     };
     reader.readAsDataURL(file);
-  };
-
-  const processImage = async (base64: string) => {
-    setState('processing');
-    setError(null);
-    setCurrentProjectId(null); 
-    setInitialStateUrl(undefined);
-    setCurrentTimelapse(undefined);
-    setImageDimensions(undefined);
-
-    try {
-      setStatusMessage('Consulting AI Artist...');
-      // Pass settings to service
-      const coloredIllustration = await transformToIllustration(base64, genSettings.style, genSettings.complexity);
-      setColoredIllustrationUrl(coloredIllustration);
-      
-      setStatusMessage('Extracting Palette...');
-      const img = new Image();
-      img.src = coloredIllustration;
-      await new Promise((resolve) => { img.onload = resolve; });
-      
-      // Capture Dimensions
-      setImageDimensions({ width: img.width, height: img.height });
-
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error("Could not initialize canvas");
-      ctx.drawImage(img, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      
-      const extractedPalette = extractPalette(imageData);
-      setPalette(extractedPalette);
-      if (extractedPalette.length > 0) {
-        setSelectedColor(extractedPalette[0].hex);
-      }
-
-      setStatusMessage('Vectorizing Lines & Regions...');
-      // New Vectorization returns both Outlines (Lines) and Regions (Fillable Shapes)
-      const { regions, outlines } = await vectorizeImage(coloredIllustration);
-      
-      setIllustrationUrl(regions);
-      setOutlinesUrl(outlines);
-      
-      setState('coloring');
-    } catch (err: any) {
-      const msg = err instanceof Error ? err.message : 'Something went wrong.';
-      if (msg.includes("Requested entity was not found") || msg.includes("API key")) {
-        setError("Invalid API Key. Please select your key again.");
-        setHasApiKey(false);
-      } else {
-        setError(msg);
-      }
-      setState('idle');
-    }
   };
 
   const startCamera = async () => {
@@ -183,7 +166,7 @@ const App: React.FC = () => {
         videoRef.current.srcObject = stream;
       }
     } catch (err) {
-      setError("Unable to access camera. Please check permissions.");
+      setUiError("Unable to access camera. Please check permissions.");
       setShowCamera(false);
     }
   };
@@ -197,72 +180,55 @@ const App: React.FC = () => {
     if (!ctx) return;
     ctx.drawImage(videoRef.current, 0, 0);
     const base64 = canvas.toDataURL('image/png');
-    setOriginalImageUrl(base64);
     const stream = videoRef.current.srcObject as MediaStream;
     stream.getTracks().forEach(track => track.stop());
     setShowCamera(false);
-    processImage(base64);
+    handleProcessImage(base64);
   };
 
   const reset = () => {
     setState('idle');
-    setIllustrationUrl(null);
-    setOutlinesUrl(undefined);
-    setColoredIllustrationUrl(null);
-    setInitialStateUrl(undefined);
-    setOriginalImageUrl(null);
-    setError(null);
-    setPalette(DEFAULT_PALETTE);
+    resetJob();
+    setActiveBundle(null);
+    setUiError(null);
     setCurrentProjectId(null);
     setCurrentTimelapse(undefined);
-    setImageDimensions(undefined);
+    setCurrentRegionColors({});
   };
 
-  // Load a project from gallery
   const handleLoadProject = (project: SavedProject) => {
     setCurrentProjectId(project.id);
-    setOriginalImageUrl(project.originalUrl);
-    setColoredIllustrationUrl(project.thumbnailUrl);
-    setIllustrationUrl(project.vectorUrl);
     setInitialStateUrl(project.currentStateUrl);
-    setPalette(project.palette);
-    setCurrentTimelapse(project.timelapseLog); 
-    
-    // Attempt to get dimensions from original or thumbnail
-    const img = new Image();
-    img.src = project.thumbnailUrl;
-    img.onload = () => {
-       setImageDimensions({ width: img.width, height: img.height });
-       setState('coloring');
-       setShowGallery(false);
-    };
-    img.onerror = () => {
-        // Fallback
-        setState('coloring');
-        setShowGallery(false);
-    };
+    setCurrentTimelapse(project.timelapseLog);
+    if (project.regionColors) {
+        setCurrentRegionColors(project.regionColors);
+    } else {
+        setCurrentRegionColors({});
+    }
+    loadBundleIntoEditor(project.bundle);
+    setShowGallery(false);
   };
 
-  const handleAutoSave = async (currentImageDataUrl: string, timelapseLog?: TimelapseFrame[]) => {
-    if (!user || !illustrationUrl || !coloredIllustrationUrl) return;
+  const handleAutoSave = async (currentImageDataUrl: string, regionColors: Record<number, string>, timelapseLog?: TimelapseFrame[]) => {
+    if (!user || !activeBundle) return;
 
     try {
       if (currentProjectId) {
         await storageService.updateProject(currentProjectId, {
           currentStateUrl: currentImageDataUrl,
-          thumbnailUrl: coloredIllustrationUrl, 
-          timelapseLog
+          thumbnailUrl: activeBundle.assets.coloredPreviewUrl, 
+          timelapseLog,
+          regionColors
         });
       } else {
         const newProject = await storageService.saveProject({
           userId: user.id,
-          name: `Artwork ${new Date().toLocaleString()}`,
-          thumbnailUrl: coloredIllustrationUrl,
-          vectorUrl: illustrationUrl, // Saving the Regions SVG url here
+          name: activeBundle.manifest.name,
+          thumbnailUrl: activeBundle.assets.coloredPreviewUrl,
+          bundle: activeBundle, 
           currentStateUrl: currentImageDataUrl,
-          originalUrl: originalImageUrl || '',
-          palette: palette,
-          timelapseLog
+          timelapseLog,
+          regionColors
         });
         setCurrentProjectId(newProject.id);
       }
@@ -287,6 +253,56 @@ const App: React.FC = () => {
               console.warn("Failed to mark finished", e);
           }
       }
+  };
+  
+  const handleOutlineChange = async (newThickness: OutlineThickness) => {
+      if (!activeBundle) return;
+      if (newThickness === genSettings.thickness) return; 
+
+      const confirmReset = Object.keys(currentRegionColors).length === 0 || window.confirm("Changing outline thickness will reset your coloring progress. Continue?");
+      if (!confirmReset) return;
+
+      setProcessingHints(true); 
+      
+      setTimeout(async () => {
+          try {
+             const img = new Image();
+             img.crossOrigin = 'anonymous';
+             img.src = activeBundle.assets.coloredPreviewUrl;
+             await new Promise(r => img.onload = r);
+             
+             const canvas = document.createElement('canvas');
+             canvas.width = img.width;
+             canvas.height = img.height;
+             const ctx = canvas.getContext('2d');
+             if (!ctx) throw new Error("Canvas context failed");
+             ctx.drawImage(img, 0, 0);
+             const imageData = ctx.getImageData(0, 0, img.width, img.height);
+
+             const repairedImageData = outlineService.processAndRepairImage(imageData, newThickness);
+             const outlinesSvg = await outlineService.generateLeakProofOutlines(imageData, newThickness);
+             const regionData = computeLabelMap(repairedImageData);
+
+             const updatedBundle: ProjectBundle = {
+                 ...activeBundle,
+                 layers: {
+                     regions: regionData,
+                     outlines: outlinesSvg
+                 }
+             };
+
+             setActiveBundle(updatedBundle);
+             setCurrentRegionColors({}); 
+             setGenSettings(s => ({ ...s, thickness: newThickness }));
+             setUiError(null);
+
+          } catch (e) {
+              console.error("Failed to update outlines", e);
+              setUiError("Failed to update outlines.");
+          } finally {
+              setProcessingHints(false);
+          }
+      }, 50);
   };
 
   // --- Render ---
@@ -343,7 +359,7 @@ const App: React.FC = () => {
         onClose={() => { setShowCompletion(false); setState('idle'); }}
         thumbnailUrl={finalImage}
         timelapseLog={finalTimelapse}
-        baseVectorUrl={outlinesUrl || illustrationUrl || ''} 
+        baseVectorUrl={activeBundle?.layers.outlines || ''} 
       />
 
       {/* Top Bar */}
@@ -370,7 +386,6 @@ const App: React.FC = () => {
               </button>
             )}
 
-            {/* Account Menu */}
             <div className="relative">
               {user ? (
                 <button 
@@ -389,7 +404,6 @@ const App: React.FC = () => {
                 </button>
               )}
 
-              {/* Dropdown */}
               {showAccountMenu && user && (
                 <div className="absolute right-0 top-14 w-48 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 animate-in fade-in slide-in-from-top-2 overflow-hidden">
                   <button 
@@ -412,10 +426,10 @@ const App: React.FC = () => {
       </header>
 
       <main className="w-full max-w-[1400px] flex flex-col items-center justify-center flex-grow relative z-0">
-        {error && (
+        {uiError && (
           <div className="mb-8 w-full max-w-2xl p-4 bg-red-50 border border-red-200 text-red-600 rounded-2xl flex items-center gap-4 animate-bounce shadow-sm">
             <i className="fa-solid fa-triangle-exclamation text-xl"></i>
-            <p className="font-medium">{error}</p>
+            <p className="font-medium">{uiError}</p>
           </div>
         )}
 
@@ -424,7 +438,7 @@ const App: React.FC = () => {
           <div className="flex flex-col items-center gap-8 md:gap-12 animate-in fade-in slide-in-from-bottom-8 duration-700 w-full">
             <div className="text-center max-w-2xl">
               <span className="px-4 py-1.5 rounded-full bg-blue-50 text-blue-600 text-xs font-bold uppercase tracking-wider mb-6 inline-block">
-                v4.0 - True Vector Engine
+                v4.8 - Outline Control
               </span>
               <h2 className="text-5xl md:text-6xl font-black text-gray-800 mb-6 leading-[1.1]">
                 Turn Memories into <br/>
@@ -446,14 +460,10 @@ const App: React.FC = () => {
                 </div>
                 <div className="text-left">
                   <div className="text-xs text-gray-400 font-bold uppercase tracking-wider">Current Style</div>
-                  <div className="text-gray-800 font-bold capitalize">{genSettings.style.replace('_', ' ')} <span className="text-gray-300 mx-1">•</span> {genSettings.complexity}</div>
+                  <div className="text-gray-800 font-bold capitalize">{genSettings.style.replace('_', ' ')} <span className="text-gray-300 mx-1">•</span> {genSettings.thickness} Outline</div>
                 </div>
                 <i className="fa-solid fa-chevron-right text-gray-300 ml-2"></i>
               </button>
-
-              <p className="text-xl text-gray-500 font-medium leading-relaxed max-w-xl mx-auto">
-                Create ultra-crisp coloring pages. Login to save your progress and build your personal collection.
-              </p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-3xl px-4">
@@ -490,29 +500,56 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* PROCESSING STATE */}
-        {state === 'processing' && (
-          <div className="glass-panel flex flex-col items-center gap-8 text-center p-16 rounded-[3rem] shadow-2xl border-t border-white/80 max-w-xl">
-            <div className="relative">
-              <div className="w-32 h-32 border-[10px] border-blue-50 border-t-blue-600 rounded-full animate-spin"></div>
-              <div className="absolute inset-0 flex items-center justify-center text-4xl text-blue-600 animate-pulse">
-                <i className="fa-solid fa-wand-magic-sparkles"></i>
-              </div>
+        {/* JOB RUNNING STATE (Pipeline Visualization) */}
+        {state === 'job_running' && activeJob && (
+          <div className="glass-panel flex flex-col gap-6 p-10 rounded-[2.5rem] shadow-2xl border-t border-white/80 w-full max-w-xl animate-in fade-in slide-in-from-bottom-4">
+            <div className="text-center">
+              <h3 className="text-2xl font-black text-gray-800 mb-1">Processing Job</h3>
+              <p className="text-gray-400 text-sm font-mono uppercase tracking-widest">ID: {activeJob.id.slice(0, 8)}</p>
             </div>
-            <div>
-              <h3 className="text-4xl font-black text-gray-800 mb-4 tracking-tight">Creating Magic</h3>
-              <p className="text-gray-500 font-medium text-lg mb-2">{statusMessage}</p>
-              <div className="flex justify-center gap-2 mt-4">
-                 <span className="w-2 h-2 rounded-full bg-blue-600 animate-bounce delay-75"></span>
-                 <span className="w-2 h-2 rounded-full bg-blue-600 animate-bounce delay-150"></span>
-                 <span className="w-2 h-2 rounded-full bg-blue-600 animate-bounce delay-300"></span>
+
+            <div className="space-y-4">
+              {activeJob.steps.map((step, idx) => (
+                <div key={step.id} className="flex items-center gap-4">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
+                    step.status === 'completed' ? 'bg-green-500 text-white' :
+                    step.status === 'running' ? 'bg-blue-500 text-white animate-pulse' :
+                    'bg-gray-100 text-gray-400'
+                  }`}>
+                    {step.status === 'completed' ? <i className="fa-solid fa-check"></i> : idx + 1}
+                  </div>
+                  <div className="flex-grow">
+                    <div className="flex justify-between text-sm font-bold text-gray-700 mb-1">
+                      <span>{step.label}</span>
+                      {step.status === 'running' && <span className="text-blue-500">Processing...</span>}
+                    </div>
+                    {step.status === 'running' && (
+                      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div className="h-full bg-blue-500 rounded-full animate-progress-indeterminate"></div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 pt-4 border-t border-gray-100">
+              <div className="flex justify-between text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">
+                <span>Total Progress</span>
+                <span>{activeJob.progress}%</span>
+              </div>
+              <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-gradient-to-r from-blue-500 to-purple-500 rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${activeJob.progress}%` }}
+                ></div>
               </div>
             </div>
           </div>
         )}
 
-        {/* COLORING STATE */}
-        {state === 'coloring' && illustrationUrl && (
+        {/* EDITOR STATE */}
+        {state === 'editor' && activeBundle && (
           <div className="w-full h-full flex flex-col lg:flex-row gap-8 items-start animate-in fade-in zoom-in duration-500 pb-20">
             
             {/* Sidebar Tools */}
@@ -536,7 +573,7 @@ const App: React.FC = () => {
                      <ColorPicker 
                         selectedColor={selectedColor} 
                         onSelectColor={(c) => { setSelectedColor(c); setIsEraser(false); }} 
-                        palette={palette}
+                        palette={activeBundle.palette}
                     />
                     {isEraser && (
                         <div className="absolute inset-0 bg-white/50 backdrop-blur-[1px] rounded-xl flex items-center justify-center cursor-not-allowed" onClick={() => setIsEraser(false)}>
@@ -547,11 +584,12 @@ const App: React.FC = () => {
                     )}
                 </div>
                 
-                <div className="mt-8 pt-6 border-t border-gray-100">
+                {/* Active Tool Indicator */}
+                <div className="mt-6 pt-6 border-t border-gray-100">
                   <div className="flex items-center justify-between mb-4">
-                    <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Selected</span>
+                    <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Active</span>
                     <div className="flex items-center gap-3">
-                        <span className="text-sm font-medium text-gray-600">{isEraser ? 'Eraser' : palette.find(c => c.hex === selectedColor)?.name || selectedColor}</span>
+                        <span className="text-sm font-medium text-gray-600">{isEraser ? 'Eraser' : activeBundle.palette.find(c => c.hex === selectedColor)?.name || selectedColor}</span>
                         <div 
                             className="w-10 h-10 rounded-full shadow-lg border-2 border-white"
                             style={{ backgroundColor: isEraser ? '#fff' : selectedColor }}
@@ -562,8 +600,48 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Outline Controls */}
+                <div className="mt-6 pt-6 border-t border-gray-100">
+                    <label className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3 block">Outline Style</label>
+                    
+                    {/* Size Selector */}
+                    <div className="flex bg-gray-100 rounded-xl p-1 mb-4">
+                        {(['thin', 'medium', 'thick', 'heavy'] as OutlineThickness[]).map(t => (
+                            <button
+                                key={t}
+                                onClick={() => handleOutlineChange(t)}
+                                className={`flex-1 py-2 rounded-lg text-[10px] md:text-xs font-bold capitalize transition-all ${
+                                    genSettings.thickness === t 
+                                    ? 'bg-white text-gray-800 shadow-sm' 
+                                    : 'text-gray-400 hover:text-gray-600'
+                                }`}
+                            >
+                                {t}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Color Selector */}
+                    <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-gray-500">Color</span>
+                        <div className="flex gap-2">
+                           {['#000000', '#374151', '#4b2c20', '#1e3a8a', '#14532d'].map(c => (
+                             <button
+                               key={c}
+                               onClick={() => setOutlineColor(c)}
+                               className={`w-8 h-8 rounded-full border-2 transition-transform ${
+                                 outlineColor === c ? 'scale-110 border-blue-500 shadow-md' : 'border-transparent hover:scale-105'
+                               }`}
+                               style={{ backgroundColor: c }}
+                               title={c}
+                             />
+                           ))}
+                        </div>
+                    </div>
+                </div>
+
                 {user && (
-                    <div className="mt-4 flex flex-col gap-2">
+                    <div className="mt-6 flex flex-col gap-2">
                        {currentProjectId && (
                           <div className="text-center text-xs font-semibold text-gray-400 mb-1 flex items-center justify-center gap-2">
                              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> Auto-save active
@@ -572,16 +650,12 @@ const App: React.FC = () => {
 
                        <button 
                           onClick={async () => {
-                              if (!user || !illustrationUrl || !coloredIllustrationUrl) return;
-                              if (currentProjectId) {
-                                alert('Project saved successfully!');
-                              } else {
-                                alert('Project will be auto-saved momentarily.');
-                              }
+                              if (!user || !activeBundle) return;
+                              alert(currentProjectId ? 'Project saved!' : 'Auto-saving...');
                           }}
                           className="w-full py-3 bg-blue-50 text-blue-600 rounded-xl font-bold hover:bg-blue-100 transition-colors flex items-center justify-center gap-2"
                       >
-                          <i className="fa-solid fa-cloud-arrow-up"></i> Save / Sync
+                          <i className="fa-solid fa-cloud-arrow-up"></i> Save
                       </button>
                     </div>
                 )}
@@ -591,18 +665,16 @@ const App: React.FC = () => {
                   <div className="bg-white p-6 rounded-[2rem] shadow-lg border border-gray-100 flex items-center gap-4 animate-pulse">
                       <div className="w-10 h-10 rounded-full border-4 border-blue-100 border-t-blue-500 animate-spin"></div>
                       <div>
-                          <p className="font-bold text-gray-800">Analyzing Details...</p>
-                          <p className="text-xs text-gray-400">Preparing Magic Hints</p>
+                          <p className="font-bold text-gray-800">Updating Outlines...</p>
                       </div>
                   </div>
               ) : (
                   <div className="bg-gradient-to-br from-indigo-600 to-purple-600 p-6 rounded-[2rem] text-white shadow-xl shadow-indigo-500/20">
                     <h4 className="font-bold text-lg mb-2 flex items-center gap-2">
-                    <i className="fa-solid fa-wand-magic-sparkles text-yellow-300"></i> Magic Hints Ready
+                    <i className="fa-solid fa-wand-magic-sparkles text-yellow-300"></i> Zen Mode Active
                     </h4>
                     <p className="text-sm opacity-90 leading-relaxed font-medium">
-                    Zoom in deep to reveal color numbers! Tap a number to auto-select its color. <br/>
-                    <b>Long press canvas to preview.</b>
+                    Showing hints only for the <b>selected color</b>. Pick a color to reveal its spots!
                     </p>
                 </div>
               )}
@@ -611,21 +683,23 @@ const App: React.FC = () => {
             {/* Main Canvas Area */}
             <div className="flex-grow w-full order-1 lg:order-2">
               <DrawingCanvas 
-                imageUrl={illustrationUrl}
-                outlinesUrl={outlinesUrl} // New Overlay
+                key={activeBundle.manifest.id}
+                regionData={activeBundle.layers.regions}
+                outlinesUrl={activeBundle.layers.outlines}
                 initialStateUrl={initialStateUrl}
-                coloredIllustrationUrl={coloredIllustrationUrl}
-                selectedColor={selectedColor} 
+                initialRegionColors={currentRegionColors}
+                coloredIllustrationUrl={activeBundle.assets.coloredPreviewUrl}
+                selectedColor={selectedColor}
+                outlineColor={outlineColor} 
                 isEraser={isEraser}
                 onHintClick={(c) => { setSelectedColor(c); setIsEraser(false); }}
                 onProcessingHints={setProcessingHints}
                 onAutoSave={user ? handleAutoSave : undefined}
                 onCompletion={handleCompletion}
-                palette={palette}
+                palette={activeBundle.palette}
                 existingTimelapse={currentTimelapse}
-                // Pass Dimensions
-                width={imageDimensions?.width}
-                height={imageDimensions?.height}
+                width={activeBundle.manifest.dimensions.width}
+                height={activeBundle.manifest.dimensions.height}
               />
             </div>
           </div>
