@@ -28,8 +28,8 @@ const isProbablySvgUrl = (url: string) => {
   return u.endsWith(".svg") || u.includes("image/svg") || u.includes("svg");
 };
 
-// Normalizes a Potrace SVG so outlines never appear “white/invisible” due to blend/compositing quirks.
-// We inline the SVG and force all drawable elements to use fill = outlineColor.
+// Normalizes an SVG so outlines are always visible.
+// Handles both fill-based (Potrace/ImageTracer) and stroke-based SVGs.
 const normalizeOutlineSvg = (svgText: string, outlineColor: string) => {
   try {
     const parser = new DOMParser();
@@ -40,36 +40,61 @@ const normalizeOutlineSvg = (svgText: string, outlineColor: string) => {
     // Ensure the SVG fits exactly the pixel canvas box.
     svg.setAttribute("width", "100%");
     svg.setAttribute("height", "100%");
-    // Important: avoid “contain” style scaling mismatch. We want 1:1 mapping into the same box.
     svg.setAttribute("preserveAspectRatio", "none");
 
-    // Remove common background rects
+    // Remove embedded styles first (they can override our attributes)
+    const styleEls = Array.from(svg.querySelectorAll("style"));
+    styleEls.forEach((s) => s.remove());
+
+    // Remove common background rects (white fills)
     const rects = Array.from(svg.querySelectorAll("rect"));
     rects.forEach((r) => {
       const fill = (r.getAttribute("fill") || "").toLowerCase().trim();
-      if (fill === "#fff" || fill === "#ffffff" || fill === "white") {
+      if (fill === "#fff" || fill === "#ffffff" || fill === "white" || fill === "rgb(255, 255, 255)" || fill === "rgb(255,255,255)") {
         r.remove();
       }
     });
 
-    // Force all drawables to be the outline color.
-    // Potrace often uses <path fill="#000000">, but some wrappers add groups/styles.
-    const nodes = Array.from(svg.querySelectorAll("path, polygon, polyline, circle, ellipse, rect, line, g"));
+    // Process all drawable elements
+    const drawableElements = Array.from(svg.querySelectorAll("path, polygon, polyline, circle, ellipse, rect, line"));
 
-    nodes.forEach((el) => {
-      // Some Potrace SVG uses group fills; enforce at element level.
-      // For <g>, fill applies to children; for shapes, it applies directly.
-      el.setAttribute("fill", outlineColor);
-      el.setAttribute("stroke", "none");
+    drawableElements.forEach((el) => {
+      const tagName = el.tagName.toLowerCase();
+      const existingFill = el.getAttribute("fill");
+      const existingStroke = el.getAttribute("stroke");
+      
+      // Stroke-based elements: <line>, <polyline>, or elements with stroke but fill="none"
+      const isStrokeBased = 
+        tagName === "line" || 
+        tagName === "polyline" ||
+        existingFill === "none" ||
+        (existingStroke && existingStroke !== "none" && (!existingFill || existingFill === "none"));
+
+      if (isStrokeBased) {
+        // Force stroke visibility
+        el.setAttribute("stroke", outlineColor);
+        el.setAttribute("stroke-width", el.getAttribute("stroke-width") || "1");
+        el.setAttribute("fill", "none");
+      } else {
+        // Fill-based shapes (typical ImageTracer/Potrace output)
+        el.setAttribute("fill", outlineColor);
+        el.setAttribute("stroke", "none");
+      }
+      
       el.setAttribute("opacity", "1");
+      el.setAttribute("fill-opacity", "1");
+      el.setAttribute("stroke-opacity", "1");
     });
 
-    // Improve crispness (doesn't force pixel snapping, but helps in many browsers)
-    svg.setAttribute("shape-rendering", "geometricPrecision");
+    // Handle <g> groups - set default fill/stroke that children inherit
+    const groups = Array.from(svg.querySelectorAll("g"));
+    groups.forEach((g) => {
+      g.setAttribute("fill", outlineColor);
+      g.setAttribute("opacity", "1");
+    });
 
-    // Ensure no embedded CSS makes things transparent/white
-    const styleEls = Array.from(svg.querySelectorAll("style"));
-    styleEls.forEach((s) => s.remove());
+    // Improve crispness
+    svg.setAttribute("shape-rendering", "geometricPrecision");
 
     const serializer = new XMLSerializer();
     return serializer.serializeToString(svg);
@@ -141,7 +166,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const lastPaintedRegionId = useRef<number>(-1);
   const strokeChangesRef = useRef<Record<number, string>>({});
 
-  // 0) Load & normalize outlines SVG (prevents “white/invisible” segments)
+  // 0) Load & normalize outlines SVG (prevents "white/invisible" segments)
   useEffect(() => {
     let cancelled = false;
 
@@ -160,7 +185,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         const normalized = normalizeOutlineSvg(text, outlineColor);
         setOutlineSvgMarkup(normalized);
       } catch {
-        // If fetch fails (CORS), we’ll fall back to <img>.
+        // If fetch fails (CORS), we'll fall back to <img>.
         setOutlineSvgMarkup(null);
       }
     };
@@ -645,7 +670,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                 style={{
                   width: "100%",
                   height: "100%",
-                  // Avoid blend-mode on SVG; it can cause “white/invisible” segments.
+                  // Avoid blend-mode on SVG; it can cause "white/invisible" segments.
                   mixBlendMode: "normal",
                 }}
                 dangerouslySetInnerHTML={{ __html: outlineSvgMarkup }}
