@@ -74,8 +74,9 @@ export const PALETTE_WHITE_THRESHOLD = 245;
 
 /**
  * Median filter threshold for binarization.
+ * Increased to 200 to capture dark gray outlines from AI generation.
  */
-export const MEDIAN_FILTER_THRESHOLD = 128;
+export const MEDIAN_FILTER_THRESHOLD = 200;
 
 /**
  * Minimum component size for despeckle operation.

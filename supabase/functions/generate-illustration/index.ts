@@ -66,20 +66,31 @@ ${selectedStyle}
 
 STRICT VISUAL REQUIREMENTS:
 1. **Pre-Colored**: The output must be FULLY COLORED with flat, solid colors.
-2. **Black Outlines**: Every single color region must be separated by a **THICK, BOLD, PURE BLACK (#000000)** stroke.
+2. **PURE BLACK OUTLINES (CRITICAL)**: 
+   - Every region MUST be separated by outlines that are EXACTLY #000000 (pure black, RGB 0,0,0).
+   - Outline thickness: 3-5 pixels minimum.
+   - NO dark gray (#333333, #444444, etc.) - ONLY pure black #000000.
+   - NO anti-aliasing on outline edges - hard, crisp edges only.
 3. **Segmentation**:
    - **Max Region Size**: ${selectedComplexity.max} of canvas.
    - **Min Region Size**: ${selectedComplexity.min} of canvas.
-4. **Color Palette**: Limit to 32 distinct colors. DO NOT USE DARK COLORS for fills.
+4. **Color Palette**: 
+   - Limit to 32 distinct colors for fills.
+   - All fill colors must be BRIGHT (luminance > 50%).
+   - DO NOT USE dark colors (no dark brown, dark blue, dark green, etc.) for fills.
+   - Fill colors should contrast strongly with the pure black outlines.
 
 NEGATIVE PROMPT (STRICTLY FORBIDDEN):
+- NO gray outlines - outlines must be pure black #000000 only.
+- NO anti-aliased outline edges.
 - NO shading, NO gradients, NO shadows.
 - NO cross-hatching, NO stippling, NO dot textures.
 - NO noise, NO sketchy lines.
 - NO realistic photo details.
-- NO grayscale.
+- NO grayscale fills.
+- NO dark fills that could be confused with outlines.
 
-The result should look like a professional vector coloring page template where the thick black lines are clearly distinguishable from the fill colors.`;
+The result should look like a professional vector coloring page template where the PURE BLACK outlines are unmistakably distinct from the bright fill colors.`;
     }
 
     console.log(`Processing ${mode} request with style: ${style}, complexity: ${complexity}`);

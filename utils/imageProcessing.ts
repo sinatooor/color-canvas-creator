@@ -24,30 +24,31 @@ import {
 export function validateAndFixFrame(imageData: ImageData): ImageData {
   const data = imageData.data;
   
+  // PHASE 1: Contrast enhancement - stretch dark grays to pure black
+  // This captures AI-generated outlines that may not be pure black
+  const GRAY_OUTLINE_THRESHOLD = 120; // Pixels darker than this become black
+  
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
     
-    // 1. Detect Outline vs Fill using OUTLINE_DARKNESS_THRESHOLD
-    const isDark = r < OUTLINE_DARKNESS_THRESHOLD && g < OUTLINE_DARKNESS_THRESHOLD && b < OUTLINE_DARKNESS_THRESHOLD;
+    // Calculate luminance (BT.601)
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
     
-    if (isDark) {
-       // Force to Pure Black for Potrace stability
+    // Enhanced outline detection: catch dark grays as outlines
+    if (lum < GRAY_OUTLINE_THRESHOLD) {
+       // Force to Pure Black for downstream processing
        data[i] = 0;
-       data[i+1] = 0;
-       data[i+2] = 0;
-    } else {
-       // 2. Validate Fill Luminance (BT.601 luma formula)
-       const lum = 0.299*r + 0.587*g + 0.114*b;
-       
-       // If fill is too dark (but not an outline), lighten it
-       if (lum < MIN_FILL_LUMINANCE) {
-           data[i] = Math.min(255, r + DARK_FILL_BOOST);
-           data[i+1] = Math.min(255, g + DARK_FILL_BOOST);
-           data[i+2] = Math.min(255, b + DARK_FILL_BOOST);
-       }
+       data[i + 1] = 0;
+       data[i + 2] = 0;
+    } else if (lum < MIN_FILL_LUMINANCE) {
+       // Mid-range: lighten to avoid confusion with outlines
+       data[i] = Math.min(255, r + DARK_FILL_BOOST);
+       data[i + 1] = Math.min(255, g + DARK_FILL_BOOST);
+       data[i + 2] = Math.min(255, b + DARK_FILL_BOOST);
     }
+    // Bright pixels stay unchanged
   }
   return imageData;
 }

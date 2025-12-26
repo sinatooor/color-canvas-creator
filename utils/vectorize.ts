@@ -126,7 +126,7 @@ export async function vectorizeImageData(imageData: ImageData): Promise<Vectoriz
                     const r = parseInt(rgb[0]);
                     const g = parseInt(rgb[1]);
                     const b = parseInt(rgb[2]);
-                    isDark = (r + g + b) / 3 < 128;
+                    isDark = (r + g + b) / 3 < 180;
                 }
             } 
             else if (fill.startsWith('#')) {
@@ -135,12 +135,12 @@ export async function vectorizeImageData(imageData: ImageData): Promise<Vectoriz
                     const r = parseInt(hex.substring(0, 2), 16);
                     const g = parseInt(hex.substring(2, 4), 16);
                     const b = parseInt(hex.substring(4, 6), 16);
-                    isDark = (r + g + b) / 3 < 128;
+                    isDark = (r + g + b) / 3 < 180;
                 } else if (hex.length === 3) {
                      const r = parseInt(hex[0]+hex[0], 16);
                      const g = parseInt(hex[1]+hex[1], 16);
                      const b = parseInt(hex[2]+hex[2], 16);
-                     isDark = (r + g + b) / 3 < 128;
+                     isDark = (r + g + b) / 3 < 180;
                 }
             } 
             else if (fill.toLowerCase() === 'black') {
