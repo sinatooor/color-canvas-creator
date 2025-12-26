@@ -1,9 +1,8 @@
-
-import React, { useRef, useEffect, useState, useCallback, useLayoutEffect } from 'react';
-import { Color, TimelapseFrame, RegionData, ScanlineRun } from '../types';
-import { MAX_UNDO_STEPS } from '../constants';
-import { soundEngine } from '../utils/soundEffects';
-import { computeScanlineRuns, analyzeRegionHints, RegionHint } from '../utils/labeling';
+import React, { useRef, useEffect, useState, useCallback, useLayoutEffect } from "react";
+import { Color, TimelapseFrame, RegionData, ScanlineRun } from "../types";
+import { MAX_UNDO_STEPS } from "../constants";
+import { soundEngine } from "../utils/soundEffects";
+import { computeScanlineRuns, analyzeRegionHints, RegionHint } from "../utils/labeling";
 
 interface DrawingCanvasProps {
   regionData: RegionData;
@@ -14,6 +13,7 @@ interface DrawingCanvasProps {
   selectedColor: string;
   outlineColor?: string;
   isEraser: boolean;
+  onHintClick: (colorHex: string) => void;
   onProcessingHints: (isProcessing: boolean) => void;
   onAutoSave?: (imageDataUrl: string, regionColors: Record<number, string>, timelapse?: TimelapseFrame[]) => void;
   onCompletion?: (imageDataUrl: string, timelapse: TimelapseFrame[]) => void;
@@ -23,13 +23,74 @@ interface DrawingCanvasProps {
   height: number;
 }
 
+const isProbablySvgUrl = (url: string) => {
+  const u = url.toLowerCase();
+  return u.endsWith(".svg") || u.includes("image/svg") || u.includes("svg");
+};
+
+// Normalizes a Potrace SVG so outlines never appear “white/invisible” due to blend/compositing quirks.
+// We inline the SVG and force all drawable elements to use fill = outlineColor.
+const normalizeOutlineSvg = (svgText: string, outlineColor: string) => {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(svgText, "image/svg+xml");
+    const svg = doc.querySelector("svg");
+    if (!svg) return svgText;
+
+    // Ensure the SVG fits exactly the pixel canvas box.
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("height", "100%");
+    // Important: avoid “contain” style scaling mismatch. We want 1:1 mapping into the same box.
+    svg.setAttribute("preserveAspectRatio", "none");
+
+    // Remove common background rects
+    const rects = Array.from(svg.querySelectorAll("rect"));
+    rects.forEach((r) => {
+      const fill = (r.getAttribute("fill") || "").toLowerCase().trim();
+      if (fill === "#fff" || fill === "#ffffff" || fill === "white") {
+        r.remove();
+      }
+    });
+
+    // Force all drawables to be the outline color.
+    // Potrace often uses <path fill="#000000">, but some wrappers add groups/styles.
+    const nodes = Array.from(svg.querySelectorAll("path, polygon, polyline, circle, ellipse, rect, line, g"));
+
+    nodes.forEach((el) => {
+      // Some Potrace SVG uses group fills; enforce at element level.
+      // For <g>, fill applies to children; for shapes, it applies directly.
+      el.setAttribute("fill", outlineColor);
+      el.setAttribute("stroke", "none");
+      el.setAttribute("opacity", "1");
+    });
+
+    // Improve crispness (doesn't force pixel snapping, but helps in many browsers)
+    svg.setAttribute("shape-rendering", "geometricPrecision");
+
+    // Ensure no embedded CSS makes things transparent/white
+    const styleEls = Array.from(svg.querySelectorAll("style"));
+    styleEls.forEach((s) => s.remove());
+
+    const serializer = new XMLSerializer();
+    return serializer.serializeToString(svg);
+  } catch {
+    return svgText;
+  }
+};
+
+const svgStringToDataUrl = (svg: string) => {
+  // Ensure proper encoding
+  const encoded = encodeURIComponent(svg).replace(/'/g, "%27").replace(/"/g, "%22");
+  return `data:image/svg+xml;charset=utf-8,${encoded}`;
+};
+
 const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   regionData,
   outlinesUrl,
   coloredIllustrationUrl,
   initialRegionColors = {},
   selectedColor,
-  outlineColor = '#000000',
+  outlineColor = "#000000",
   isEraser,
   onProcessingHints,
   onAutoSave,
@@ -37,7 +98,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   palette,
   existingTimelapse,
   width,
-  height
+  height,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -45,6 +106,9 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const contextRef = useRef<CanvasRenderingContext2D | null>(null);
   const hintsCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Outline SVG (inline, normalized)
+  const [outlineSvgMarkup, setOutlineSvgMarkup] = useState<string | null>(null);
 
   // Engine State
   const runsRef = useRef<Map<number, ScanlineRun[]> | null>(null);
@@ -56,7 +120,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const [history, setHistory] = useState<Record<number, string>[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
 
-  const [ripples, setRipples] = useState<{ x: number, y: number, id: number, color: string }[]>([]);
+  const [ripples, setRipples] = useState<{ x: number; y: number; id: number; color: string }[]>([]);
   const [showPreview, setShowPreview] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
 
@@ -64,7 +128,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
   // Transform & Interaction State
   const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
-  const [mode, setMode] = useState<'paint' | 'move'>('paint');
+  const [mode, setMode] = useState<"paint" | "move">("paint");
 
   // Input Handling Refs
   const evCache = useRef<React.PointerEvent[]>([]);
@@ -72,10 +136,40 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
   const isPaintingRef = useRef(false);
   const isPanningRef = useRef(false);
-  const lastPoint = useRef<{ x: number, y: number } | null>(null);
+  const lastPoint = useRef<{ x: number; y: number } | null>(null);
 
   const lastPaintedRegionId = useRef<number>(-1);
   const strokeChangesRef = useRef<Record<number, string>>({});
+
+  // 0) Load & normalize outlines SVG (prevents “white/invisible” segments)
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSvg = async () => {
+      setOutlineSvgMarkup(null);
+      if (!outlinesUrl) return;
+
+      const isSvg = isProbablySvgUrl(outlinesUrl);
+      if (!isSvg) return;
+
+      try {
+        const res = await fetch(outlinesUrl, { mode: "cors" });
+        const text = await res.text();
+        if (cancelled) return;
+
+        const normalized = normalizeOutlineSvg(text, outlineColor);
+        setOutlineSvgMarkup(normalized);
+      } catch {
+        // If fetch fails (CORS), we’ll fall back to <img>.
+        setOutlineSvgMarkup(null);
+      }
+    };
+
+    loadSvg();
+    return () => {
+      cancelled = true;
+    };
+  }, [outlinesUrl, outlineColor]);
 
   // 1. Initial Fit
   useEffect(() => {
@@ -103,13 +197,17 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       if (coloredIllustrationUrl) {
         const img = new Image();
-        img.crossOrigin = 'anonymous';
+        img.crossOrigin = "anonymous";
         img.src = coloredIllustrationUrl;
-        await new Promise(r => img.onload = r);
-        const tempCanvas = document.createElement('canvas');
+        await new Promise<void>((resolve) => {
+          img.onload = () => resolve();
+          img.onerror = () => resolve();
+        });
+
+        const tempCanvas = document.createElement("canvas");
         tempCanvas.width = width;
         tempCanvas.height = height;
-        const tempCtx = tempCanvas.getContext('2d');
+        const tempCtx = tempCanvas.getContext("2d");
         if (tempCtx) {
           tempCtx.drawImage(img, 0, 0);
           const originalData = tempCtx.getImageData(0, 0, width, height);
@@ -122,19 +220,18 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     };
 
     setTimeout(initEngine, 50);
-
-  }, [regionData, coloredIllustrationUrl, palette, width, height]);
+  }, [regionData, coloredIllustrationUrl, palette, width, height, onProcessingHints]);
 
   // 3. Canvas Init & Restore
   useEffect(() => {
     if (!isEngineReady || !canvasRef.current) return;
-    const ctx = canvasRef.current.getContext('2d', { willReadFrequently: true });
+    const ctx = canvasRef.current.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
     contextRef.current = ctx;
 
     ctx.clearRect(0, 0, width, height);
     Object.entries(regionColors).forEach(([idStr, color]) => {
-      paintRegion(ctx, parseInt(idStr), color);
+      paintRegion(ctx, parseInt(idStr, 10), color);
     });
 
     if (history.length === 0) {
@@ -145,15 +242,14 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (existingTimelapse && existingTimelapse.length > 0) {
       timelapseLog.current = [...existingTimelapse];
     }
-
-  }, [isEngineReady, initialRegionColors, width, height]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEngineReady, width, height]);
 
   // 4. Smart Hints Layer ("Zen Mode")
-  // Only shows hints for the currently selected color
   useLayoutEffect(() => {
     const cvs = hintsCanvasRef.current;
     if (!cvs || !isEngineReady) return;
-    const ctx = cvs.getContext('2d');
+    const ctx = cvs.getContext("2d");
     if (!ctx) return;
 
     ctx.clearRect(0, 0, width, height);
@@ -163,36 +259,27 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     const hints = hintsRef.current;
     ctx.font = 'bold 16px "Outfit", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
 
-    hints.forEach(hint => {
-      // If already colored, never show hint
+    hints.forEach((hint) => {
       if (regionColors[hint.regionId]) return;
 
       const isMatchingColor = palette[hint.paletteIndex]?.hex === selectedColor;
-
-      // "Zen Mode": Only show the hint if it matches the current marker
       if (isMatchingColor) {
-        // Draw a prominent bubble
-        ctx.fillStyle = '#ffffff';
         ctx.beginPath();
         ctx.arc(hint.x, hint.y, 14, 0, Math.PI * 2);
         ctx.fillStyle = selectedColor;
         ctx.fill();
 
-        // White border for contrast
         ctx.lineWidth = 2;
-        ctx.strokeStyle = '#fff';
+        ctx.strokeStyle = "#fff";
         ctx.stroke();
 
-        // Text
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = "#ffffff";
         ctx.fillText((hint.paletteIndex + 1).toString(), hint.x, hint.y);
       }
-      // Else: Don't draw anything to keep it clean!
     });
-
   }, [transform.scale, regionColors, selectedColor, isEngineReady, width, height, palette]);
 
   const paintRegion = useCallback((ctx: CanvasRenderingContext2D, regionId: number, color: string) => {
@@ -203,18 +290,21 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     ctx.fillStyle = color;
     ctx.beginPath();
     for (const [y, xStart, xEnd] of runs) {
-      ctx.rect(xStart, y, (xEnd - xStart) + 1, 1);
+      ctx.rect(xStart, y, xEnd - xStart + 1, 1);
     }
     ctx.fill();
   }, []);
 
-  const saveHistoryStep = useCallback((mergedColors: Record<number, string>) => {
-    const newHistory = history.slice(0, historyIndex + 1);
-    if (newHistory.length >= MAX_UNDO_STEPS) newHistory.shift();
-    newHistory.push(mergedColors);
-    setHistory(newHistory);
-    setHistoryIndex(newHistory.length - 1);
-  }, [history, historyIndex]);
+  const saveHistoryStep = useCallback(
+    (mergedColors: Record<number, string>) => {
+      const newHistory = history.slice(0, historyIndex + 1);
+      if (newHistory.length >= MAX_UNDO_STEPS) newHistory.shift();
+      newHistory.push(mergedColors);
+      setHistory(newHistory);
+      setHistoryIndex(newHistory.length - 1);
+    },
+    [history, historyIndex],
+  );
 
   const undo = useCallback(() => {
     if (historyIndex > 0) {
@@ -228,39 +318,56 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       if (ctx) {
         ctx.clearRect(0, 0, width, height);
         Object.entries(prevColors).forEach(([idStr, color]) => {
-          paintRegion(ctx, parseInt(idStr), color);
+          paintRegion(ctx, parseInt(idStr, 10), color);
         });
       }
     }
   }, [historyIndex, history, width, height, paintRegion]);
 
   const generateCompositeImage = useCallback(async () => {
-    const tempCanvas = document.createElement('canvas');
+    const tempCanvas = document.createElement("canvas");
     tempCanvas.width = width;
     tempCanvas.height = height;
-    const ctx = tempCanvas.getContext('2d');
-    if (!ctx) return '';
+    const ctx = tempCanvas.getContext("2d");
+    if (!ctx) return "";
 
-    ctx.fillStyle = '#ffffff';
+    // White background
+    ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, width, height);
 
+    // Paint layer
     if (canvasRef.current) {
-      ctx.globalCompositeOperation = 'multiply';
+      ctx.globalCompositeOperation = "multiply";
       ctx.drawImage(canvasRef.current, 0, 0);
-      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalCompositeOperation = "source-over";
     }
 
+    // Outline layer (SVG preferred, normalized)
     if (outlinesUrl) {
-      const img = new Image();
-      img.src = outlinesUrl;
-      img.crossOrigin = 'anonymous';
-      await new Promise(r => img.onload = r);
-      // Standard Draw for Save
-      ctx.drawImage(img, 0, 0, width, height);
+      try {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+
+        // If we have normalized inline SVG, use it for saving too
+        if (outlineSvgMarkup) {
+          img.src = svgStringToDataUrl(outlineSvgMarkup);
+        } else {
+          img.src = outlinesUrl;
+        }
+
+        await new Promise<void>((resolve) => {
+          img.onload = () => resolve();
+          img.onerror = () => resolve();
+        });
+
+        ctx.drawImage(img, 0, 0, width, height);
+      } catch {
+        // ignore
+      }
     }
 
-    return tempCanvas.toDataURL('image/png');
-  }, [outlinesUrl, width, height]);
+    return tempCanvas.toDataURL("image/png");
+  }, [outlinesUrl, outlineSvgMarkup, width, height]);
 
   // Auto-Save
   useEffect(() => {
@@ -273,8 +380,6 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     }, 10000);
     return () => clearInterval(interval);
   }, [onAutoSave, regionColors, isCompleted, generateCompositeImage]);
-
-  // --- Interaction Core ---
 
   const getRegionIdAtEvent = (e: React.PointerEvent) => {
     if (!containerRef.current) return -1;
@@ -291,31 +396,29 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const applyPaintToRegion = (regionId: number, clientX: number, clientY: number) => {
     if (regionId <= 0) return;
 
-    const colorToUse = isEraser ? 'TRANSPARENT' : selectedColor;
     const ctx = contextRef.current;
     if (!ctx) return;
 
     if (isEraser) {
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.fillStyle = 'black';
-      paintRegion(ctx, regionId, 'black');
-      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalCompositeOperation = "destination-out";
+      paintRegion(ctx, regionId, "black");
+      ctx.globalCompositeOperation = "source-over";
     } else {
-      paintRegion(ctx, regionId, colorToUse);
+      paintRegion(ctx, regionId, selectedColor);
     }
 
     soundEngine.playPop();
-    addRipple(clientX, clientY, isEraser ? 'gray' : selectedColor);
+    addRipple(clientX, clientY, isEraser ? "gray" : selectedColor);
 
-    setRegionColors(prev => {
+    setRegionColors((prev) => {
       const next = { ...prev };
       if (isEraser) delete next[regionId];
-      else next[regionId] = colorToUse;
+      else next[regionId] = selectedColor;
       strokeChangesRef.current = next;
       return next;
     });
 
-    timelapseLog.current.push({ x: 0, y: 0, regionId, color: colorToUse });
+    timelapseLog.current.push({ x: 0, y: 0, regionId, color: isEraser ? "TRANSPARENT" : selectedColor });
   };
 
   const checkCompletion = () => {
@@ -323,7 +426,9 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (regionData.maxRegionId > 10 && coloredCount > regionData.maxRegionId * 0.95 && !isCompleted) {
       setIsCompleted(true);
       soundEngine.playCheer();
-      if (onCompletion) generateCompositeImage().then(url => onCompletion(url, timelapseLog.current));
+      if (onCompletion) {
+        generateCompositeImage().then((url) => onCompletion(url, timelapseLog.current));
+      }
     }
   };
 
@@ -332,7 +437,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     evCache.current.push(e);
 
     const isMultiTouch = evCache.current.length > 1;
-    const isMoveMode = mode === 'move' || e.button === 1;
+    const isMoveMode = mode === "move" || e.button === 1;
 
     if (isMoveMode || isMultiTouch) {
       isPanningRef.current = true;
@@ -352,27 +457,27 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
-    const index = evCache.current.findIndex(ev => ev.pointerId === e.pointerId);
+    const index = evCache.current.findIndex((ev) => ev.pointerId === e.pointerId);
     if (index > -1) evCache.current[index] = e;
 
     if (isPanningRef.current) {
       if (evCache.current.length === 2) {
         const curDiff = Math.hypot(
           evCache.current[0].clientX - evCache.current[1].clientX,
-          evCache.current[0].clientY - evCache.current[1].clientY
+          evCache.current[0].clientY - evCache.current[1].clientY,
         );
         if (prevDiff.current > 0) {
           const delta = curDiff - prevDiff.current;
-          setTransform(t => ({
+          setTransform((t) => ({
             ...t,
-            scale: Math.min(Math.max(0.1, t.scale + delta * 0.005), 8)
+            scale: Math.min(Math.max(0.1, t.scale + delta * 0.005), 8),
           }));
         }
         prevDiff.current = curDiff;
       } else if (lastPoint.current) {
         const dx = e.clientX - lastPoint.current.x;
         const dy = e.clientY - lastPoint.current.y;
-        setTransform(t => ({ ...t, x: t.x + dx, y: t.y + dy }));
+        setTransform((t) => ({ ...t, x: t.x + dx, y: t.y + dy }));
         lastPoint.current = { x: e.clientX, y: e.clientY };
       }
       return;
@@ -399,7 +504,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     lastPoint.current = null;
     prevDiff.current = -1;
 
-    const index = evCache.current.findIndex(ev => ev.pointerId === e.pointerId);
+    const index = evCache.current.findIndex((ev) => ev.pointerId === e.pointerId);
     if (index > -1) evCache.current.splice(index, 1);
   };
 
@@ -407,8 +512,8 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const rect = containerRef.current?.getBoundingClientRect();
     if (rect) {
       const id = Date.now() + Math.random();
-      setRipples(prev => [...prev, { x: x - rect.left, y: y - rect.top, id, color }]);
-      setTimeout(() => setRipples(prev => prev.filter(r => r.id !== id)), 600);
+      setRipples((prev) => [...prev, { x: x - rect.left, y: y - rect.top, id, color }]);
+      setTimeout(() => setRipples((prev) => prev.filter((r) => r.id !== id)), 600);
     }
   };
 
@@ -422,8 +527,8 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
   const download = async () => {
     const url = await generateCompositeImage();
-    const link = document.createElement('a');
-    link.download = 'FifoColor_Art.png';
+    const link = document.createElement("a");
+    link.download = "FifoColor_Art.png";
     link.href = url;
     link.click();
   };
@@ -434,17 +539,19 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       <div className="glass-panel rounded-full px-4 py-2 flex items-center gap-4 shadow-lg mb-2 z-10 flex-wrap justify-center">
         <div className="flex bg-gray-100 rounded-full p-1">
           <button
-            onClick={() => setMode('paint')}
-            className={`px-4 py-1.5 rounded-full text-sm font-bold transition-all ${mode === 'paint' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'
-              }`}
+            onClick={() => setMode("paint")}
+            className={`px-4 py-1.5 rounded-full text-sm font-bold transition-all ${
+              mode === "paint" ? "bg-white shadow text-blue-600" : "text-gray-500 hover:text-gray-700"
+            }`}
           >
-            <i className={`fa-solid ${isEraser ? 'fa-eraser' : 'fa-paintbrush'} mr-2`}></i>
-            {isEraser ? 'Eraser' : 'Paint'}
+            <i className={`fa-solid ${isEraser ? "fa-eraser" : "fa-paintbrush"} mr-2`}></i>
+            {isEraser ? "Eraser" : "Paint"}
           </button>
           <button
-            onClick={() => setMode('move')}
-            className={`px-4 py-1.5 rounded-full text-sm font-bold transition-all ${mode === 'move' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'
-              }`}
+            onClick={() => setMode("move")}
+            className={`px-4 py-1.5 rounded-full text-sm font-bold transition-all ${
+              mode === "move" ? "bg-white shadow text-blue-600" : "text-gray-500 hover:text-gray-700"
+            }`}
           >
             <i className="fa-solid fa-up-down-left-right mr-2"></i> Move
           </button>
@@ -455,25 +562,38 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             <>
               <button
                 onClick={() => setShowPreview(!showPreview)}
-                className={`w-8 h-8 rounded-full transition-all flex items-center justify-center ${showPreview ? 'bg-purple-500 text-white shadow-md' : 'hover:bg-gray-100 text-gray-500'
-                  }`}
+                className={`w-8 h-8 rounded-full transition-all flex items-center justify-center ${
+                  showPreview ? "bg-purple-500 text-white shadow-md" : "hover:bg-gray-100 text-gray-500"
+                }`}
                 title="Toggle Reference Image"
               >
-                <i className={`fa-solid ${showPreview ? 'fa-eye-slash' : 'fa-eye'}`}></i>
+                <i className={`fa-solid ${showPreview ? "fa-eye-slash" : "fa-eye"}`}></i>
               </button>
               <div className="w-px h-6 bg-gray-300 mx-1"></div>
             </>
           )}
-          <button onClick={() => setTransform(t => ({ ...t, scale: t.scale * 0.8 }))} className="w-8 h-8 hover:bg-gray-100 rounded-full"><i className="fa-solid fa-minus"></i></button>
-          <button onClick={() => setTransform(t => ({ ...t, scale: t.scale * 1.2 }))} className="w-8 h-8 hover:bg-gray-100 rounded-full"><i className="fa-solid fa-plus"></i></button>
-          <button onClick={resetView} className="w-8 h-8 hover:bg-gray-100 rounded-full text-blue-500"><i className="fa-solid fa-compress"></i></button>
+          <button
+            onClick={() => setTransform((t) => ({ ...t, scale: t.scale * 0.8 }))}
+            className="w-8 h-8 hover:bg-gray-100 rounded-full"
+          >
+            <i className="fa-solid fa-minus"></i>
+          </button>
+          <button
+            onClick={() => setTransform((t) => ({ ...t, scale: t.scale * 1.2 }))}
+            className="w-8 h-8 hover:bg-gray-100 rounded-full"
+          >
+            <i className="fa-solid fa-plus"></i>
+          </button>
+          <button onClick={resetView} className="w-8 h-8 hover:bg-gray-100 rounded-full text-blue-500">
+            <i className="fa-solid fa-compress"></i>
+          </button>
         </div>
       </div>
 
       <div
         ref={containerRef}
         className="relative bg-gray-100/50 rounded-3xl shadow-inner border border-gray-200 overflow-hidden w-full h-[65vh] touch-none flex items-center justify-center"
-        style={{ cursor: mode === 'move' ? 'grab' : 'crosshair' }}
+        style={{ cursor: mode === "move" ? "grab" : "crosshair" }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -483,15 +603,15 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         <div
           style={{
             transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
-            transformOrigin: '0 0',
-            width: width,
-            height: height,
-            position: 'absolute',
+            transformOrigin: "0 0",
+            width,
+            height,
+            position: "absolute",
             top: 0,
             left: 0,
-            backgroundColor: '#ffffff',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
-            backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.08'/%3E%3C/svg%3E")`
+            backgroundColor: "#ffffff",
+            boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
+            backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.08'/%3E%3C/svg%3E")`,
           }}
         >
           {/* LAYER 1: Fill Canvas (Multiply Blend for ink effect) */}
@@ -500,34 +620,51 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             width={width}
             height={height}
             className="absolute inset-0 z-0"
-            style={{ imageRendering: 'pixelated', mixBlendMode: 'multiply' }}
+            style={{
+              imageRendering: "pixelated",
+              mixBlendMode: "multiply",
+            }}
           />
 
-          {/* LAYER 2: Hints Canvas (Dynamic Zen Mode) */}
+          {/* LAYER 2: Hints Canvas */}
           <canvas
             ref={hintsCanvasRef}
             width={width}
             height={height}
             className="absolute inset-0 z-10 pointer-events-none transition-opacity duration-300"
             style={{
-              opacity: transform.scale < 0.5 ? 0 : 1
+              opacity: transform.scale < 0.5 ? 0 : 1,
             }}
           />
 
-          {/* LAYER 3: Outline Overlay - Rendered directly for visibility */}
-          {outlinesUrl && (
-            <img
-              id="OutlineLayer"
-              src={outlinesUrl}
-              className="absolute inset-0 w-full h-full z-20"
-              style={{
-                pointerEvents: 'none',
-                objectFit: 'contain',
-                mixBlendMode: 'multiply'
-              }}
-              crossOrigin="anonymous"
-            />
-          )}
+          {/* LAYER 3: Outline Overlay (FIXED) */}
+          {outlinesUrl &&
+            (outlineSvgMarkup ? (
+              <div
+                className="absolute inset-0 z-20 pointer-events-none"
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  // Avoid blend-mode on SVG; it can cause “white/invisible” segments.
+                  mixBlendMode: "normal",
+                }}
+                dangerouslySetInnerHTML={{ __html: outlineSvgMarkup }}
+              />
+            ) : (
+              <img
+                id="OutlineLayer"
+                src={outlinesUrl}
+                className="absolute inset-0 w-full h-full z-20"
+                crossOrigin="anonymous"
+                style={{
+                  pointerEvents: "none",
+                  objectFit: "fill",
+                  // Only keep multiply for raster outlines; SVG should be inline.
+                  mixBlendMode: "multiply",
+                  transform: "translateZ(0)",
+                }}
+              />
+            ))}
 
           {/* LAYER 4: Reference Preview */}
           {coloredIllustrationUrl && showPreview && (
@@ -535,19 +672,23 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
               id="PreviewLayer"
               src={coloredIllustrationUrl}
               className="absolute inset-0 w-full h-full object-cover z-30 opacity-90"
-              style={{ pointerEvents: 'none' }}
+              style={{ pointerEvents: "none" }}
+              crossOrigin="anonymous"
             />
           )}
         </div>
 
-        {ripples.map(r => (
+        {ripples.map((r) => (
           <div
             key={r.id}
             className="absolute rounded-full border-2 animate-ping pointer-events-none z-50"
             style={{
-              left: r.x, top: r.y, width: 40, height: 40,
+              left: r.x,
+              top: r.y,
+              width: 40,
+              height: 40,
               borderColor: r.color,
-              transform: 'translate(-50%, -50%)'
+              transform: "translate(-50%, -50%)",
             }}
           />
         ))}
@@ -555,10 +696,17 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       {/* Undo / Save Buttons */}
       <div className="flex gap-4">
-        <button onClick={undo} disabled={historyIndex <= 0} className="glass-panel px-8 py-3 rounded-full font-bold text-gray-600">
+        <button
+          onClick={undo}
+          disabled={historyIndex <= 0}
+          className="glass-panel px-8 py-3 rounded-full font-bold text-gray-600"
+        >
           <i className="fa-solid fa-rotate-left mr-2"></i> Undo
         </button>
-        <button onClick={download} className="px-8 py-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-full font-bold shadow-lg hover:shadow-green-500/50 hover:-translate-y-1 transition-all">
+        <button
+          onClick={download}
+          className="px-8 py-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-full font-bold shadow-lg hover:shadow-green-500/50 hover:-translate-y-1 transition-all"
+        >
           <i className="fa-solid fa-share-from-square mr-2"></i> Save Art
         </button>
       </div>
