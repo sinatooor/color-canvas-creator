@@ -3,6 +3,7 @@ import { Color, TimelapseFrame, RegionData, ScanlineRun } from "../types";
 import { MAX_UNDO_STEPS } from "../constants";
 import { soundEngine } from "../utils/soundEffects";
 import { computeScanlineRuns, analyzeRegionHints, RegionHint } from "../utils/labeling";
+import { computeColorBoundaries, renderColorBoundaries } from "../utils/boundaryDetection";
 
 interface DrawingCanvasProps {
   regionData: RegionData;
@@ -103,11 +104,17 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const contextRef = useRef<CanvasRenderingContext2D | null>(null);
   const hintsCanvasRef = useRef<HTMLCanvasElement>(null);
   const outlinesCanvasRef = useRef<HTMLCanvasElement>(null);
+  const colorBoundariesCanvasRef = useRef<HTMLCanvasElement>(null);
 
   // Outline rendering (derived from label map)
   const [outlinesEnabled, setOutlinesEnabled] = useState(true);
   const [outlineThicknessPx, setOutlineThicknessPx] = useState(3);
   const [outlinesReady, setOutlinesReady] = useState(false);
+
+  // Color boundaries rendering (between differently-colored regions)
+  const [colorBoundariesEnabled, setColorBoundariesEnabled] = useState(true);
+  const [colorBoundaryThickness, setColorBoundaryThickness] = useState(2);
+  const [colorBoundaryColor, setColorBoundaryColor] = useState("#333333");
 
   // Engine State
   const runsRef = useRef<Map<number, ScanlineRun[]> | null>(null);
@@ -165,6 +172,30 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     setOutlinesReady(true);
   }, [regionData, width, height, outlineColor, outlinesEnabled, outlineThicknessPx]);
+
+  // Render color boundaries between differently-colored regions
+  useEffect(() => {
+    if (!colorBoundariesCanvasRef.current) return;
+    if (!regionData || regionData.labelMap.length === 0) return;
+
+    const ctx = colorBoundariesCanvasRef.current.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+
+    if (!colorBoundariesEnabled || Object.keys(regionColors).length < 2) {
+      ctx.clearRect(0, 0, width, height);
+      return;
+    }
+
+    const boundaryPixels = computeColorBoundaries(regionData, regionColors);
+    renderColorBoundaries({
+      ctx,
+      boundaryPixels,
+      width,
+      height,
+      colorHex: colorBoundaryColor,
+      thicknessPx: colorBoundaryThickness,
+    });
+  }, [regionData, regionColors, width, height, colorBoundariesEnabled, colorBoundaryThickness, colorBoundaryColor]);
 
   // 1. Initial Fit
   useEffect(() => {
@@ -337,13 +368,18 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       ctx.globalCompositeOperation = "source-over";
     }
 
+    // Color boundaries layer
+    if (colorBoundariesCanvasRef.current && colorBoundariesEnabled) {
+      ctx.drawImage(colorBoundariesCanvasRef.current, 0, 0);
+    }
+
     // Outline layer
     if (outlinesCanvasRef.current && outlinesReady) {
       ctx.drawImage(outlinesCanvasRef.current, 0, 0);
     }
 
     return tempCanvas.toDataURL("image/png");
-  }, [width, height, outlinesReady]);
+  }, [width, height, outlinesReady, colorBoundariesEnabled]);
 
   // Auto-Save
   useEffect(() => {
@@ -563,6 +599,42 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
         <div className="w-px h-6 bg-gray-300"></div>
 
+        {/* Color boundaries controls */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setColorBoundariesEnabled((v) => !v)}
+            className={`w-8 h-8 rounded-full transition-all flex items-center justify-center ${
+              colorBoundariesEnabled ? "bg-amber-500 text-white shadow-md" : "hover:bg-gray-100 text-gray-500"
+            }`}
+            title={colorBoundariesEnabled ? "Hide color borders" : "Show color borders"}
+          >
+            <i className={`fa-solid ${colorBoundariesEnabled ? "fa-grip" : "fa-border-none"}`}></i>
+          </button>
+
+          <div className="flex items-center gap-2 text-sm text-gray-600">
+            <span className="font-bold">Borders</span>
+            <input
+              type="range"
+              min={1}
+              max={5}
+              value={colorBoundaryThickness}
+              onChange={(e) => setColorBoundaryThickness(parseInt(e.target.value, 10))}
+              className="accent-amber-500"
+              title="Border thickness"
+            />
+          </div>
+
+          <input
+            type="color"
+            value={colorBoundaryColor}
+            onChange={(e) => setColorBoundaryColor(e.target.value)}
+            className="w-6 h-6 rounded cursor-pointer border-0"
+            title="Border color"
+          />
+        </div>
+
+        <div className="w-px h-6 bg-gray-300"></div>
+
         <div className="flex gap-2 text-gray-600 items-center">
           {coloredIllustrationUrl && (
             <>
@@ -643,7 +715,18 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             }}
           />
 
-          {/* LAYER 3: Outline Canvas (RELIABLE - draws outlines directly) */}
+          {/* LAYER 3: Color Boundaries Canvas */}
+          <canvas
+            ref={colorBoundariesCanvasRef}
+            width={width}
+            height={height}
+            className="absolute inset-0 z-15 pointer-events-none"
+            style={{
+              imageRendering: "auto",
+            }}
+          />
+
+          {/* LAYER 4: Outline Canvas (RELIABLE - draws outlines directly) */}
           <canvas
             ref={outlinesCanvasRef}
             width={width}
