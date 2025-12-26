@@ -23,13 +23,7 @@ interface DrawingCanvasProps {
   height: number;
 }
 
-const isProbablySvgUrl = (url: string) => {
-  const u = url.toLowerCase();
-  return u.endsWith(".svg") || u.includes("image/svg") || u.includes("svg");
-};
-
-// Normalizes an SVG so outlines are always visible.
-// Handles both fill-based (Potrace/ImageTracer) and stroke-based SVGs.
+// Normalizes an SVG so outlines are always visible (black).
 const normalizeOutlineSvg = (svgText: string, outlineColor: string) => {
   try {
     const parser = new DOMParser();
@@ -37,70 +31,50 @@ const normalizeOutlineSvg = (svgText: string, outlineColor: string) => {
     const svg = doc.querySelector("svg");
     if (!svg) return svgText;
 
-    // Ensure the SVG fits exactly the pixel canvas box.
     svg.setAttribute("width", "100%");
     svg.setAttribute("height", "100%");
     svg.setAttribute("preserveAspectRatio", "none");
 
-    // Remove embedded styles first (they can override our attributes)
-    const styleEls = Array.from(svg.querySelectorAll("style"));
-    styleEls.forEach((s) => s.remove());
+    // Remove embedded styles
+    svg.querySelectorAll("style").forEach((s) => s.remove());
 
-    // Remove common background rects (white fills)
-    const rects = Array.from(svg.querySelectorAll("rect"));
-    rects.forEach((r) => {
+    // Remove white background rects
+    svg.querySelectorAll("rect").forEach((r) => {
       const fill = (r.getAttribute("fill") || "").toLowerCase().trim();
-      if (fill === "#fff" || fill === "#ffffff" || fill === "white" || fill === "rgb(255, 255, 255)" || fill === "rgb(255,255,255)") {
+      if (["#fff", "#ffffff", "white", "rgb(255, 255, 255)", "rgb(255,255,255)"].includes(fill)) {
         r.remove();
       }
     });
 
-    // Process all drawable elements
-    const drawableElements = Array.from(svg.querySelectorAll("path, polygon, polyline, circle, ellipse, rect, line"));
-
-    drawableElements.forEach((el) => {
+    // Force all drawable elements to use outline color
+    svg.querySelectorAll("path, polygon, polyline, circle, ellipse, rect, line").forEach((el) => {
       const tagName = el.tagName.toLowerCase();
       const existingFill = el.getAttribute("fill");
       const existingStroke = el.getAttribute("stroke");
       
-      // Stroke-based elements: <line>, <polyline>, or elements with stroke but fill="none"
       const isStrokeBased = 
         tagName === "line" || 
         tagName === "polyline" ||
         existingFill === "none" ||
-        (existingStroke && existingStroke !== "none" && (!existingFill || existingFill === "none"));
+        (existingStroke && existingStroke !== "none" && !existingFill);
 
       if (isStrokeBased) {
-        // Force stroke visibility
         el.setAttribute("stroke", outlineColor);
         el.setAttribute("stroke-width", el.getAttribute("stroke-width") || "1");
         el.setAttribute("fill", "none");
       } else {
-        // Fill-based shapes (typical ImageTracer/Potrace output)
         el.setAttribute("fill", outlineColor);
         el.setAttribute("stroke", "none");
       }
       
       el.setAttribute("opacity", "1");
-      el.setAttribute("fill-opacity", "1");
-      el.setAttribute("stroke-opacity", "1");
     });
 
-
-    // Improve crispness
     svg.setAttribute("shape-rendering", "geometricPrecision");
-
-    const serializer = new XMLSerializer();
-    return serializer.serializeToString(svg);
+    return new XMLSerializer().serializeToString(svg);
   } catch {
     return svgText;
   }
-};
-
-const svgStringToDataUrl = (svg: string) => {
-  // Ensure proper encoding
-  const encoded = encodeURIComponent(svg).replace(/'/g, "%27").replace(/"/g, "%22");
-  return `data:image/svg+xml;charset=utf-8,${encoded}`;
 };
 
 const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
@@ -125,9 +99,10 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const contextRef = useRef<CanvasRenderingContext2D | null>(null);
   const hintsCanvasRef = useRef<HTMLCanvasElement>(null);
+  const outlinesCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Outline SVG (inline, normalized)
-  const [outlineSvgMarkup, setOutlineSvgMarkup] = useState<string | null>(null);
+  // Outlines loaded state
+  const [outlinesReady, setOutlinesReady] = useState(false);
 
   // Engine State
   const runsRef = useRef<Map<number, ScanlineRun[]> | null>(null);
@@ -160,35 +135,77 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const lastPaintedRegionId = useRef<number>(-1);
   const strokeChangesRef = useRef<Record<number, string>>({});
 
-  // 0) Load & normalize outlines SVG (prevents "white/invisible" segments)
+  // 0) Load outlines onto a dedicated canvas (reliable approach)
   useEffect(() => {
-    let cancelled = false;
-
-    const loadSvg = async () => {
-      setOutlineSvgMarkup(null);
-      if (!outlinesUrl) return;
-
-      const isSvg = isProbablySvgUrl(outlinesUrl);
-      if (!isSvg) return;
-
+    if (!outlinesUrl || !outlinesCanvasRef.current) return;
+    
+    const canvas = outlinesCanvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    
+    setOutlinesReady(false);
+    
+    const loadOutlines = async () => {
       try {
-        const res = await fetch(outlinesUrl, { mode: "cors" });
-        const text = await res.text();
-        if (cancelled) return;
-
-        const normalized = normalizeOutlineSvg(text, outlineColor);
-        setOutlineSvgMarkup(normalized);
-      } catch {
-        // If fetch fails (CORS), we'll fall back to <img>.
-        setOutlineSvgMarkup(null);
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        
+        // For SVG data URLs or SVG files, we need to handle them properly
+        if (outlinesUrl.includes("svg")) {
+          // Fetch and process SVG to ensure black outlines
+          const isSvgDataUrl = outlinesUrl.startsWith("data:image/svg");
+          let svgText: string;
+          
+          if (isSvgDataUrl) {
+            // Decode base64 SVG
+            const base64Part = outlinesUrl.split(",")[1];
+            svgText = atob(base64Part);
+          } else {
+            const res = await fetch(outlinesUrl);
+            svgText = await res.text();
+          }
+          
+          // Normalize SVG: ensure all paths are black
+          const normalized = normalizeOutlineSvg(svgText, outlineColor);
+          
+          // Convert normalized SVG to data URL for img loading
+          const blob = new Blob([normalized], { type: "image/svg+xml" });
+          const url = URL.createObjectURL(blob);
+          img.src = url;
+          
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => {
+              URL.revokeObjectURL(url);
+              resolve();
+            };
+            img.onerror = () => {
+              URL.revokeObjectURL(url);
+              reject();
+            };
+          });
+        } else {
+          // Regular image URL
+          img.src = outlinesUrl;
+          await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = () => reject();
+          });
+        }
+        
+        // Clear and draw outlines to canvas
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        setOutlinesReady(true);
+        console.log("Outlines rendered to canvas successfully");
+      } catch (err) {
+        console.error("Failed to load outlines:", err);
+        setOutlinesReady(false);
       }
     };
-
-    loadSvg();
-    return () => {
-      cancelled = true;
-    };
-  }, [outlinesUrl, outlineColor]);
+    
+    loadOutlines();
+  }, [outlinesUrl, outlineColor, width, height]);
 
   // 1. Initial Fit
   useEffect(() => {
@@ -354,39 +371,20 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, width, height);
 
-    // Paint layer
+    // Paint layer (with multiply blend)
     if (canvasRef.current) {
       ctx.globalCompositeOperation = "multiply";
       ctx.drawImage(canvasRef.current, 0, 0);
       ctx.globalCompositeOperation = "source-over";
     }
 
-    // Outline layer (SVG preferred, normalized)
-    if (outlinesUrl) {
-      try {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-
-        // If we have normalized inline SVG, use it for saving too
-        if (outlineSvgMarkup) {
-          img.src = svgStringToDataUrl(outlineSvgMarkup);
-        } else {
-          img.src = outlinesUrl;
-        }
-
-        await new Promise<void>((resolve) => {
-          img.onload = () => resolve();
-          img.onerror = () => resolve();
-        });
-
-        ctx.drawImage(img, 0, 0, width, height);
-      } catch {
-        // ignore
-      }
+    // Outline layer from our dedicated canvas
+    if (outlinesCanvasRef.current && outlinesReady) {
+      ctx.drawImage(outlinesCanvasRef.current, 0, 0);
     }
 
     return tempCanvas.toDataURL("image/png");
-  }, [outlinesUrl, outlineSvgMarkup, width, height]);
+  }, [width, height, outlinesReady]);
 
   // Auto-Save
   useEffect(() => {
@@ -656,34 +654,16 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             }}
           />
 
-          {/* LAYER 3: Outline Overlay (FIXED) */}
-          {outlinesUrl &&
-            (outlineSvgMarkup ? (
-              <div
-                className="absolute inset-0 z-20 pointer-events-none"
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  // Avoid blend-mode on SVG; it can cause "white/invisible" segments.
-                  mixBlendMode: "normal",
-                }}
-                dangerouslySetInnerHTML={{ __html: outlineSvgMarkup }}
-              />
-            ) : (
-              <img
-                id="OutlineLayer"
-                src={outlinesUrl}
-                className="absolute inset-0 w-full h-full z-20"
-                crossOrigin="anonymous"
-                style={{
-                  pointerEvents: "none",
-                  objectFit: "fill",
-                  // Only keep multiply for raster outlines; SVG should be inline.
-                  mixBlendMode: "multiply",
-                  transform: "translateZ(0)",
-                }}
-              />
-            ))}
+          {/* LAYER 3: Outline Canvas (RELIABLE - draws outlines directly) */}
+          <canvas
+            ref={outlinesCanvasRef}
+            width={width}
+            height={height}
+            className="absolute inset-0 z-20 pointer-events-none"
+            style={{
+              imageRendering: "auto",
+            }}
+          />
 
           {/* LAYER 4: Reference Preview */}
           {coloredIllustrationUrl && showPreview && (
