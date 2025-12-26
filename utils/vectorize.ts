@@ -154,9 +154,25 @@ export async function vectorizeImageData(imageData: ImageData): Promise<Vectoriz
             // Light paths = Hidden
             if (isDark) {
                 const clone = outlines.doc.importNode(p, true) as SVGElement;
-                clone.setAttribute('fill', '#000000');
-                clone.setAttribute('fill-opacity', '1');
-                clone.style.stroke = 'none';
+                
+                // Check if original path is stroke-based (fill="none") or fill-based
+                const origFill = p.getAttribute('fill');
+                const origStroke = p.getAttribute('stroke');
+                const isStrokeBased = origFill === 'none' || (origStroke && origStroke !== 'none');
+                
+                if (isStrokeBased) {
+                    // Preserve as stroke-based path
+                    clone.setAttribute('fill', 'none');
+                    clone.setAttribute('stroke', '#000000');
+                    clone.setAttribute('stroke-width', p.getAttribute('stroke-width') || '1');
+                    clone.setAttribute('stroke-opacity', '1');
+                } else {
+                    // Fill-based path (typical ImageTracer output)
+                    clone.setAttribute('fill', '#000000');
+                    clone.setAttribute('fill-opacity', '1');
+                    clone.setAttribute('stroke', 'none');
+                }
+                
                 outlines.svg.appendChild(clone);
                 keptPaths++;
             }
