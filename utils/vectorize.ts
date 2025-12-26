@@ -53,14 +53,16 @@ export async function vectorizeImageData(imageData: ImageData): Promise<Vectoriz
             cleanData.data[i+3] = 255; 
         }
 
-        // 2. Configuration optimized for SMOOTH Vector Lines
+        // 2. Configuration optimized for vectorizing thin black outlines
+        // NOTE: If pathomit is too high, thin lines can disappear completely.
         const options = {
             // Processing
             corsenabled: false,
-            // 1.0 is a good balance for smooth illustration look
-            ltres: 1.0,         
-            qtres: 1.0,         
-            pathomit: 4,        // Reduced from 8 to 4 to catch finer lines
+            // Lower thresholds preserve more detail
+            ltres: 0.5,
+            qtres: 0.5,
+            // CRITICAL: do not omit small paths (thin outlines)
+            pathomit: 0,
             rightangleenhance: false,
             
             // Colors
@@ -70,17 +72,17 @@ export async function vectorizeImageData(imageData: ImageData): Promise<Vectoriz
             colorquantcycles: 0,
             
             // Styling
-            strokewidth: 0,     
+            strokewidth: 0,
             linefilter: false,
             scale: 1,
             viewbox: true,
             desc: false,
             
             // Rounding helps smooth out sub-pixel jitter
-            roundcoords: 1, 
+            roundcoords: 1,
             
             // Palette (Strict B/W)
-            pal: [{r:0,g:0,b:0,a:255}, {r:255,g:255,b:255,a:255}] 
+            pal: [{r:0,g:0,b:0,a:255}, {r:255,g:255,b:255,a:255}]
         };
 
         // 3. Generate SVG
@@ -106,19 +108,19 @@ export async function vectorizeImageData(imageData: ImageData): Promise<Vectoriz
         };
 
         const outlines = createNewSvg();
+        let keptPaths = 0;
 
         paths.forEach(p => {
             let fill = p.getAttribute('fill');
-            if (!fill && p.style.fill) fill = p.style.fill;
+            if (!fill && (p as any).style?.fill) fill = (p as any).style.fill;
             if (!fill) fill = 'rgb(0,0,0)'; // Default
 
             // Robust color detection
             // ImageTracer outputs RGB(r,g,b).
             // We want the lines. In our binary map, 0 is Black (Lines).
             // So we want paths that are closer to Black than White.
-            
             let isDark = false;
-            
+
             // Check for RGB format
             if (fill.startsWith('rgb')) {
                 const rgb = fill.match(/\d+/g);
@@ -128,7 +130,7 @@ export async function vectorizeImageData(imageData: ImageData): Promise<Vectoriz
                     const b = parseInt(rgb[2]);
                     isDark = (r + g + b) / 3 < 180;
                 }
-            } 
+            }
             else if (fill.startsWith('#')) {
                 const hex = fill.replace('#', '');
                 if (hex.length === 6) {
@@ -142,31 +144,37 @@ export async function vectorizeImageData(imageData: ImageData): Promise<Vectoriz
                      const b = parseInt(hex[2]+hex[2], 16);
                      isDark = (r + g + b) / 3 < 180;
                 }
-            } 
+            }
             else if (fill.toLowerCase() === 'black') {
                 isDark = true;
             }
 
             // FILTER:
-            // Since we use this SVG as a MASK, opacity matters.
-            // Dark paths = Opaque (Mask Visible)
-            // Light paths = Transparent (Mask Hidden)
+            // Dark paths = Opaque (Visible)
+            // Light paths = Hidden
             if (isDark) {
                 const clone = outlines.doc.importNode(p, true) as SVGElement;
-                clone.setAttribute('fill', '#000000'); // Force Pure Black for Mask
-                clone.setAttribute('fill-opacity', '1'); // Force Opaque
-                clone.style.stroke = 'none'; 
+                clone.setAttribute('fill', '#000000');
+                clone.setAttribute('fill-opacity', '1');
+                clone.style.stroke = 'none';
                 outlines.svg.appendChild(clone);
+                keptPaths++;
             }
         });
 
+        // If we somehow filtered everything out, fall back to the raw traced SVG.
+        // This prevents the editor from showing a blank canvas.
         const s = new XMLSerializer();
-        const outlinesStr = s.serializeToString(outlines.doc);
+        const outputSvg = keptPaths > 0 ? s.serializeToString(outlines.doc) : svgStr;
+        if (keptPaths === 0) {
+            console.warn('vectorizeImageData: no dark paths detected; returning unfiltered SVG');
+        }
+
         const toBase64 = (str: string) => window.btoa(unescape(encodeURIComponent(str)));
-        
+
         return {
-            outlines: `data:image/svg+xml;base64,${toBase64(outlinesStr)}`,
-            regions: "" 
+            outlines: `data:image/svg+xml;base64,${toBase64(outputSvg)}`,
+            regions: ""
         };
 
     } catch (err) {
