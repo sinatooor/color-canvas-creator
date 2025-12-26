@@ -515,25 +515,18 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             }}
           />
 
-          {/* LAYER 3: Outline Overlay (CSS Mask for Dynamic Color & Perfect Opacity) */}
+          {/* LAYER 3: Outline Overlay - Rendered directly for visibility */}
           {outlinesUrl && (
-            <div
+            <img
               id="OutlineLayer"
+              src={outlinesUrl}
               className="absolute inset-0 w-full h-full z-20"
               style={{
                 pointerEvents: 'none',
-                maskImage: `url("${outlinesUrl}")`,
-                WebkitMaskImage: `url("${outlinesUrl}")`,
-                maskSize: '100% 100%',
-                WebkitMaskSize: '100% 100%',
-                maskRepeat: 'no-repeat',
-                WebkitMaskRepeat: 'no-repeat',
-                maskMode: 'alpha',
-                WebkitMaskMode: 'alpha',
-                maskComposite: 'source-over',
-                WebkitMaskComposite: 'source-over',
-                backgroundColor: outlineColor
+                objectFit: 'contain',
+                mixBlendMode: 'multiply'
               }}
+              crossOrigin="anonymous"
             />
           )}
 
