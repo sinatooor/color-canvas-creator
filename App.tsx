@@ -125,10 +125,7 @@ const App: React.FC = () => {
       // Start Pipeline
       setState('job_running');
       startJob(base64, genSettings, (bundle) => {
-          // Success Callback
-          setTimeout(() => {
-            loadBundleIntoEditor(bundle);
-          }, 800);
+          loadBundleIntoEditor(bundle);
       });
   };
 
@@ -262,47 +259,44 @@ const App: React.FC = () => {
       const confirmReset = Object.keys(currentRegionColors).length === 0 || window.confirm("Changing outline thickness will reset your coloring progress. Continue?");
       if (!confirmReset) return;
 
-      setProcessingHints(true); 
+      setProcessingHints(true);
       
-      setTimeout(async () => {
-          try {
-             const img = new Image();
-             img.crossOrigin = 'anonymous';
-             img.src = activeBundle.assets.coloredPreviewUrl;
-             await new Promise(r => img.onload = r);
-             
-             const canvas = document.createElement('canvas');
-             canvas.width = img.width;
-             canvas.height = img.height;
-             const ctx = canvas.getContext('2d');
-             if (!ctx) throw new Error("Canvas context failed");
-             ctx.drawImage(img, 0, 0);
-             const imageData = ctx.getImageData(0, 0, img.width, img.height);
+      try {
+         const img = new Image();
+         img.crossOrigin = 'anonymous';
+         img.src = activeBundle.assets.coloredPreviewUrl;
+         await new Promise(r => img.onload = r);
+         
+         const canvas = document.createElement('canvas');
+         canvas.width = img.width;
+         canvas.height = img.height;
+         const ctx = canvas.getContext('2d');
+         if (!ctx) throw new Error("Canvas context failed");
+         ctx.drawImage(img, 0, 0);
+         const imageData = ctx.getImageData(0, 0, img.width, img.height);
 
-             const repairedImageData = outlineService.processAndRepairImage(imageData, newThickness);
-             const outlinesSvg = await outlineService.generateLeakProofOutlines(imageData, newThickness);
-             const regionData = computeLabelMap(repairedImageData);
+         const repairedImageData = outlineService.processAndRepairImage(imageData, newThickness);
+         const outlinesSvg = await outlineService.generateLeakProofOutlines(imageData, newThickness);
+         const regionData = computeLabelMap(repairedImageData);
 
-             const updatedBundle: ProjectBundle = {
-                 ...activeBundle,
-                 layers: {
-                     regions: regionData,
-                     outlines: outlinesSvg
-                 }
-             };
+         const updatedBundle: ProjectBundle = {
+             ...activeBundle,
+             layers: {
+                 regions: regionData,
+                 outlines: outlinesSvg
+             }
+         };
 
-             setActiveBundle(updatedBundle);
-             setCurrentRegionColors({}); 
-             setGenSettings(s => ({ ...s, thickness: newThickness }));
-             setUiError(null);
-
-          } catch (e) {
-              console.error("Failed to update outlines", e);
-              setUiError("Failed to update outlines.");
-          } finally {
-              setProcessingHints(false);
-          }
-      }, 50);
+         setActiveBundle(updatedBundle);
+         setCurrentRegionColors({}); 
+         setGenSettings(s => ({ ...s, thickness: newThickness }));
+         setUiError(null);
+      } catch (e) {
+         console.error("Failed to update outlines", e);
+         setUiError("Failed to update outlines.");
+      } finally {
+         setProcessingHints(false);
+      }
   };
 
   // --- Render ---

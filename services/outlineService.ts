@@ -169,9 +169,7 @@ function removeSmallComponents(mask: Uint8Array, width: number, height: number, 
                 const x = idx % width;
                 const y = Math.floor(idx / width);
 
-                // 4-connectivity
-                const neighbors = [idx-1, idx+1, idx-width, idx+width];
-                // Boundary checks simplified for speed
+                // 4-connectivity (inline for speed)
                 if (x > 0 && mask[idx-1] === 1 && labels[idx-1] === 0) { labels[idx-1] = currentLabel; stack.push(idx-1); }
                 if (x < width-1 && mask[idx+1] === 1 && labels[idx+1] === 0) { labels[idx+1] = currentLabel; stack.push(idx+1); }
                 if (y > 0 && mask[idx-width] === 1 && labels[idx-width] === 0) { labels[idx-width] = currentLabel; stack.push(idx-width); }

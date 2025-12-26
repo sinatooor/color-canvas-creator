@@ -18,12 +18,6 @@ export const WALL_THRESHOLD = 30;
 export const MIN_REGION_SIZE_FOR_HINTS = 100;
 
 /**
- * Threshold for black outline detection in validation.
- * Pixels with all channels below this are forced to pure black.
- */
-export const OUTLINE_DARKNESS_THRESHOLD = 40;
-
-/**
  * Minimum luminance for fill colors (approx 30% of 255).
  * Dark fills below this are lightened to improve contrast.
  */
@@ -33,12 +27,6 @@ export const MIN_FILL_LUMINANCE = 76;
  * Brightness boost applied to too-dark fill colors.
  */
 export const DARK_FILL_BOOST = 60;
-
-/**
- * Binarization threshold for image processing.
- * Pixels with max channel below this become black.
- */
-export const BINARIZE_THRESHOLD = 20;
 
 /**
  * Minimum neighbors for salt/pepper noise filter.

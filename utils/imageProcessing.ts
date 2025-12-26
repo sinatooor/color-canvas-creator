@@ -1,10 +1,8 @@
 
 import { Color, Hint } from '../types';
 import {
-  OUTLINE_DARKNESS_THRESHOLD,
   MIN_FILL_LUMINANCE,
   DARK_FILL_BOOST,
-  BINARIZE_THRESHOLD,
   NOISE_NEIGHBOR_THRESHOLD,
   PALETTE_SAMPLE_STEP,
   PALETTE_K_MEANS_K,
@@ -24,9 +22,8 @@ import {
 export function validateAndFixFrame(imageData: ImageData): ImageData {
   const data = imageData.data;
   
-  // PHASE 1: Contrast enhancement - stretch dark grays to pure black
-  // This captures AI-generated outlines that may not be pure black
-  const GRAY_OUTLINE_THRESHOLD = 120; // Pixels darker than this become black
+  // Contrast enhancement - stretch dark grays to pure black
+  const GRAY_OUTLINE_THRESHOLD = 120;
   
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i];
@@ -57,7 +54,7 @@ export function validateAndFixFrame(imageData: ImageData): ImageData {
  * Converts image data to strict Black and White (1-bit equivalent).
  * Uses Max Channel Value < threshold to identify lines.
  */
-export function binarizeImageData(imageData: ImageData, threshold: number = BINARIZE_THRESHOLD): ImageData {
+export function binarizeImageData(imageData: ImageData, threshold: number = 20): ImageData {
   const data = imageData.data;
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i];
@@ -118,11 +115,6 @@ export function cleanupArtifacts(imageData: ImageData): ImageData {
 /**
  * Extracts a palette using K-Means Clustering.
  * Sorts by HSL Hue for better visual organization.
- */
-/**
- * Extracts a palette using K-Means Clustering.
- * Sorts by HSL Hue for better visual organization.
- * 
  * PERFORMANCE: Uses PALETTE_SAMPLE_STEP for reduced sampling (default 1/100th).
  */
 export function extractPalette(imageData: ImageData): Color[] {

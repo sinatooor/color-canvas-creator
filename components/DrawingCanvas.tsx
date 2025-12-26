@@ -86,12 +86,6 @@ const normalizeOutlineSvg = (svgText: string, outlineColor: string) => {
       el.setAttribute("stroke-opacity", "1");
     });
 
-    // Handle <g> groups - set default fill/stroke that children inherit
-    const groups = Array.from(svg.querySelectorAll("g"));
-    groups.forEach((g) => {
-      g.setAttribute("fill", outlineColor);
-      g.setAttribute("opacity", "1");
-    });
 
     // Improve crispness
     svg.setAttribute("shape-rendering", "geometricPrecision");
