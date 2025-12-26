@@ -74,29 +74,49 @@ const THICKNESS_RADIUS: Record<OutlineThickness, number> = {
 
 /**
  * Central Logic: Computes the binary wall mask from the input image.
+ * SIMPLIFIED: Less aggressive processing to preserve original outlines better.
  */
 function computeCleanMask(imageData: ImageData, thickness: OutlineThickness): Uint8Array {
     const width = imageData.width;
     const height = imageData.height;
 
-    // 1. Initial Processing: Median Filter (De-noise)
-    let mask = applyMedianFilter(imageData);
+    // 1. Direct threshold from image - no median filter to preserve outline fidelity
+    let mask = directThreshold(imageData);
     
-    // 2. Despeckle: Remove small isolated black regions using constant
+    // 2. Light despeckle - only remove tiny noise specks
     mask = removeSmallComponents(mask, width, height, DESPECKLE_MIN_SIZE); 
 
-    // 3. Skeletonize: Thin lines to 1px centerlines
-    mask = skeletonize(mask, width, height);
-
-    // 4. Controlled Thickening based on User Setting (using lookup table)
-    const radius = THICKNESS_RADIUS[thickness];
-    mask = morphDilateCircular(mask, width, height, radius);
-
-    // 5. Gap Closing: Small close operation to fix micro-breaks
+    // 3. Skip skeletonization to preserve original line widths
+    // Only apply minimal thickening if needed for gap closing
+    
+    // 4. Small gap closing only (1px close operation)
     mask = morphDilateCircular(mask, width, height, 1);
     mask = morphErodeCircular(mask, width, height, 1);
 
     return mask;
+}
+
+/**
+ * Simple threshold without median filter to preserve original outlines.
+ */
+function directThreshold(imageData: ImageData): Uint8Array {
+    const { width, height, data } = imageData;
+    const output = new Uint8Array(width * height);
+    
+    for (let i = 0; i < width * height; i++) {
+        const idx = i * 4;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        
+        // Use max channel as luminance proxy (more lenient)
+        const maxChannel = Math.max(r, g, b);
+        
+        // Wall if pixel is dark enough
+        output[i] = maxChannel < MEDIAN_FILTER_THRESHOLD ? 1 : 0;
+    }
+    
+    return output;
 }
 
 /**

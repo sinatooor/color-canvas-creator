@@ -8,8 +8,9 @@ import { Color } from './types';
 /** 
  * Pixel threshold for classifying as "wall" (outline) in label map.
  * Pixels with all RGB channels below this value are treated as boundaries.
+ * Higher value = more pixels treated as walls (more sensitive to gray lines)
  */
-export const WALL_THRESHOLD = 30;
+export const WALL_THRESHOLD = 128;
 
 /**
  * Minimum region size in pixels to show hints.
@@ -62,14 +63,15 @@ export const PALETTE_WHITE_THRESHOLD = 245;
 
 /**
  * Median filter threshold for binarization.
- * Increased to 200 to capture dark gray outlines from AI generation.
+ * Lower value = less aggressive, preserves more detail from original outlines.
  */
-export const MEDIAN_FILTER_THRESHOLD = 200;
+export const MEDIAN_FILTER_THRESHOLD = 128;
 
 /**
  * Minimum component size for despeckle operation.
+ * Lower value = keeps smaller outline fragments.
  */
-export const DESPECKLE_MIN_SIZE = 50;
+export const DESPECKLE_MIN_SIZE = 15;
 
 // ============================================
 // Application Constants
