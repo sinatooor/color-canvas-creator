@@ -1,7 +1,6 @@
-
-import React, { useState } from 'react';
-import { storageService } from '../services/storageService';
-import { User } from '../types';
+import React, { useState } from "react";
+import { storageService } from "../services/storageService";
+import { User } from "../types";
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -12,33 +11,33 @@ interface AuthModalProps {
 const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLoginSuccess }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [error, setError] = useState("");
+
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setError('');
+    setError("");
 
     try {
       let user: User;
       if (isLogin) {
         user = await storageService.login(email, password);
       } else {
-        if (!name) throw new Error('Name is required');
+        if (!name) throw new Error("Name is required");
         user = await storageService.signup(name, email, password);
       }
       onLoginSuccess(user);
       onClose();
       // Reset form
-      setPassword('');
+      setPassword("");
     } catch (err: any) {
-      setError(err.message || 'Authentication failed');
+      setError(err.message || "Authentication failed");
     } finally {
       setLoading(false);
     }
@@ -53,11 +52,9 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLoginSuccess }
 
         <div className="p-8">
           <div className="text-center mb-8">
-            <h2 className="text-3xl font-black text-gray-800 mb-2">
-              {isLogin ? 'Welcome Back' : 'Join FifoColor.AI'}
-            </h2>
+            <h2 className="text-3xl font-black text-gray-800 mb-2">{isLogin ? "Welcome Back" : "Join FifoColor.AI"}</h2>
             <p className="text-gray-500">
-              {isLogin ? 'Sign in to access your gallery' : 'Create an account to save your art'}
+              {isLogin ? "Sign in to access your gallery" : "Create an account to save your art"}
             </p>
           </div>
 
@@ -71,11 +68,11 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLoginSuccess }
                   className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
                   placeholder="Van Gogh"
                   value={name}
-                  onChange={e => setName(e.target.value)}
+                  onChange={(e) => setName(e.target.value)}
                 />
               </div>
             )}
-            
+
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-1">Email</label>
               <input
@@ -84,7 +81,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLoginSuccess }
                 className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
                 placeholder="artist@example.com"
                 value={email}
-                onChange={e => setEmail(e.target.value)}
+                onChange={(e) => setEmail(e.target.value)}
               />
             </div>
 
@@ -97,7 +94,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLoginSuccess }
                 className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all font-mono"
                 placeholder="••••••••"
                 value={password}
-                onChange={e => setPassword(e.target.value)}
+                onChange={(e) => setPassword(e.target.value)}
               />
             </div>
 
@@ -108,13 +105,23 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLoginSuccess }
               disabled={loading}
               className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl font-bold transition-all shadow-lg active:scale-95 disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
-              {loading ? <i className="fa-solid fa-circle-notch animate-spin"></i> : (isLogin ? 'Sign In' : 'Create Account')}
+              {loading ? (
+                <i className="fa-solid fa-circle-notch animate-spin"></i>
+              ) : isLogin ? (
+                "Sign In"
+              ) : (
+                "Create Account"
+              )}
             </button>
           </form>
 
           <div className="mt-6 text-center">
             <button
-              onClick={() => { setIsLogin(!isLogin); setError(''); setPassword(''); }}
+              onClick={() => {
+                setIsLogin(!isLogin);
+                setError("");
+                setPassword("");
+              }}
               className="text-sm font-semibold text-gray-500 hover:text-blue-600 transition-colors"
             >
               {isLogin ? "Don't have an account? Sign Up" : "Already have an account? Sign In"}
