@@ -1,3 +1,4 @@
+// @ts-nocheck - Deno edge function runs in Deno runtime
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const corsHeaders = {
