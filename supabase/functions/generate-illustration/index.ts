@@ -95,6 +95,16 @@ The result should look like a professional vector coloring page template where t
 
     console.log(`Processing ${mode} request with style: ${style}, complexity: ${complexity}`);
 
+    // Helper to extract image from response
+    const extractImage = (response: any): string | null => {
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+        }
+      }
+      return null;
+    };
+
     // Try with gemini-3-pro-image-preview first (best quality)
     try {
       const response = await ai.models.generateContent({
@@ -112,14 +122,11 @@ The result should look like a professional vector coloring page template where t
       });
 
       console.log("Gemini 3 Pro response received");
-
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          const imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-          return new Response(JSON.stringify({ imageUrl }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
+      const imageUrl = extractImage(response);
+      if (imageUrl) {
+        return new Response(JSON.stringify({ imageUrl }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
     } catch (err) {
       console.warn("Pro model failed, attempting fallback...", err);
@@ -142,14 +149,11 @@ The result should look like a professional vector coloring page template where t
       });
 
       console.log("Gemini 2.5 Flash response received");
-
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          const imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-          return new Response(JSON.stringify({ imageUrl }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
+      const imageUrl = extractImage(response);
+      if (imageUrl) {
+        return new Response(JSON.stringify({ imageUrl }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
       }
     } catch (err: any) {
       console.error("Fallback model also failed:", err);

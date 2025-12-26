@@ -1,7 +1,7 @@
 
 import { RegionData, ScanlineRun, Color } from "../types";
 import { hexToRgb } from "./floodFill";
-import { WALL_THRESHOLD } from "../constants";
+import { WALL_THRESHOLD, MIN_REGION_SIZE_FOR_HINTS } from "../constants";
 
 /**
  * ARCHITECTURE IMPLEMENTATION: Label Map Generator
@@ -207,13 +207,9 @@ export function analyzeRegionHints(
     }
 
     const hints: RegionHint[] = [];
-
-    // Process accumulators into Hints
-    // Import MIN_REGION_SIZE_FOR_HINTS at top - using inline value for now
-    const MIN_HINT_SIZE = 100; // Minimum region size to show hints (filter noise)
     
     for (let id = 1; id <= maxRegionId; id++) {
-        if (count[id] < MIN_HINT_SIZE) continue; // Skip tiny specks to avoid clutter
+        if (count[id] < MIN_REGION_SIZE_FOR_HINTS) continue;
 
         const avgR = rSum[id] / count[id];
         const avgG = gSum[id] / count[id];

@@ -110,69 +110,43 @@ export async function vectorizeImageData(imageData: ImageData): Promise<Vectoriz
         const outlines = createNewSvg();
         let keptPaths = 0;
 
-        paths.forEach(p => {
-            let fill = p.getAttribute('fill');
-            if (!fill && (p as any).style?.fill) fill = (p as any).style.fill;
-            if (!fill) fill = 'rgb(0,0,0)'; // Default
-
-            // Robust color detection
-            // ImageTracer outputs RGB(r,g,b).
-            // We want the lines. In our binary map, 0 is Black (Lines).
-            // So we want paths that are closer to Black than White.
-            let isDark = false;
-
-            // Check for RGB format
-            if (fill.startsWith('rgb')) {
-                const rgb = fill.match(/\d+/g);
+        // Helper: detect if color is dark (ImageTracer outputs fill-based paths)
+        const isDarkColor = (colorStr: string): boolean => {
+            if (!colorStr) return true;
+            const c = colorStr.toLowerCase().trim();
+            if (c === 'black') return true;
+            if (c === 'white' || c === 'none') return false;
+            
+            let r = 0, g = 0, b = 0;
+            if (c.startsWith('rgb')) {
+                const rgb = c.match(/\d+/g);
                 if (rgb && rgb.length >= 3) {
-                    const r = parseInt(rgb[0]);
-                    const g = parseInt(rgb[1]);
-                    const b = parseInt(rgb[2]);
-                    isDark = (r + g + b) / 3 < 180;
+                    r = parseInt(rgb[0]); g = parseInt(rgb[1]); b = parseInt(rgb[2]);
                 }
-            }
-            else if (fill.startsWith('#')) {
-                const hex = fill.replace('#', '');
+            } else if (c.startsWith('#')) {
+                const hex = c.replace('#', '');
                 if (hex.length === 6) {
-                    const r = parseInt(hex.substring(0, 2), 16);
-                    const g = parseInt(hex.substring(2, 4), 16);
-                    const b = parseInt(hex.substring(4, 6), 16);
-                    isDark = (r + g + b) / 3 < 180;
+                    r = parseInt(hex.substring(0, 2), 16);
+                    g = parseInt(hex.substring(2, 4), 16);
+                    b = parseInt(hex.substring(4, 6), 16);
                 } else if (hex.length === 3) {
-                     const r = parseInt(hex[0]+hex[0], 16);
-                     const g = parseInt(hex[1]+hex[1], 16);
-                     const b = parseInt(hex[2]+hex[2], 16);
-                     isDark = (r + g + b) / 3 < 180;
+                    r = parseInt(hex[0] + hex[0], 16);
+                    g = parseInt(hex[1] + hex[1], 16);
+                    b = parseInt(hex[2] + hex[2], 16);
                 }
             }
-            else if (fill.toLowerCase() === 'black') {
-                isDark = true;
-            }
+            return (r + g + b) / 3 < 180;
+        };
 
-            // FILTER:
-            // Dark paths = Opaque (Visible)
-            // Light paths = Hidden
-            if (isDark) {
+        paths.forEach(p => {
+            const fill = p.getAttribute('fill') || (p as any).style?.fill || 'rgb(0,0,0)';
+            
+            if (isDarkColor(fill)) {
                 const clone = outlines.doc.importNode(p, true) as SVGElement;
-                
-                // Check if original path is stroke-based (fill="none") or fill-based
-                const origFill = p.getAttribute('fill');
-                const origStroke = p.getAttribute('stroke');
-                const isStrokeBased = origFill === 'none' || (origStroke && origStroke !== 'none');
-                
-                if (isStrokeBased) {
-                    // Preserve as stroke-based path
-                    clone.setAttribute('fill', 'none');
-                    clone.setAttribute('stroke', '#000000');
-                    clone.setAttribute('stroke-width', p.getAttribute('stroke-width') || '1');
-                    clone.setAttribute('stroke-opacity', '1');
-                } else {
-                    // Fill-based path (typical ImageTracer output)
-                    clone.setAttribute('fill', '#000000');
-                    clone.setAttribute('fill-opacity', '1');
-                    clone.setAttribute('stroke', 'none');
-                }
-                
+                // ImageTracer outputs fill-based paths only
+                clone.setAttribute('fill', '#000000');
+                clone.setAttribute('fill-opacity', '1');
+                clone.setAttribute('stroke', 'none');
                 outlines.svg.appendChild(clone);
                 keptPaths++;
             }
