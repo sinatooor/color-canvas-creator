@@ -23,63 +23,66 @@ interface DrawingCanvasProps {
   height: number;
 }
 
-// Normalizes an SVG so outlines are always visible (black).
-const normalizeOutlineSvg = (svgText: string, outlineColor: string) => {
-  try {
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(svgText, "image/svg+xml");
-    const svg = doc.querySelector("svg");
-    if (!svg) return svgText;
-
-    svg.setAttribute("width", "100%");
-    svg.setAttribute("height", "100%");
-    svg.setAttribute("preserveAspectRatio", "none");
-
-    // Remove embedded styles
-    svg.querySelectorAll("style").forEach((s) => s.remove());
-
-    // Remove white background rects
-    svg.querySelectorAll("rect").forEach((r) => {
-      const fill = (r.getAttribute("fill") || "").toLowerCase().trim();
-      if (["#fff", "#ffffff", "white", "rgb(255, 255, 255)", "rgb(255,255,255)"].includes(fill)) {
-        r.remove();
-      }
-    });
-
-    // Force all drawable elements to use outline color
-    svg.querySelectorAll("path, polygon, polyline, circle, ellipse, rect, line").forEach((el) => {
-      const tagName = el.tagName.toLowerCase();
-      const existingFill = el.getAttribute("fill");
-      const existingStroke = el.getAttribute("stroke");
-      
-      const isStrokeBased = 
-        tagName === "line" || 
-        tagName === "polyline" ||
-        existingFill === "none" ||
-        (existingStroke && existingStroke !== "none" && !existingFill);
-
-      if (isStrokeBased) {
-        el.setAttribute("stroke", outlineColor);
-        el.setAttribute("stroke-width", el.getAttribute("stroke-width") || "1");
-        el.setAttribute("fill", "none");
-      } else {
-        el.setAttribute("fill", outlineColor);
-        el.setAttribute("stroke", "none");
-      }
-      
-      el.setAttribute("opacity", "1");
-    });
-
-    svg.setAttribute("shape-rendering", "geometricPrecision");
-    return new XMLSerializer().serializeToString(svg);
-  } catch {
-    return svgText;
+// Renders outlines directly from RegionData.labelMap (no SVG/image overlay).
+// Any pixel with regionId=0 is treated as an outline "wall".
+const hexToRgb = (hex: string): [number, number, number] => {
+  const h = hex.replace("#", "").trim();
+  if (h.length === 3) {
+    return [
+      parseInt(h[0] + h[0], 16),
+      parseInt(h[1] + h[1], 16),
+      parseInt(h[2] + h[2], 16),
+    ];
   }
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+};
+
+const renderOutlinesFromLabelMap = (params: {
+  ctx: CanvasRenderingContext2D;
+  regionData: RegionData;
+  width: number;
+  height: number;
+  colorHex: string;
+  thicknessPx: number;
+}) => {
+  const { ctx, regionData, width, height, colorHex, thicknessPx } = params;
+  const [r, g, b] = hexToRgb(colorHex);
+
+  ctx.clearRect(0, 0, width, height);
+
+  const out = new Uint8ClampedArray(width * height * 4);
+  const lm = regionData.labelMap;
+  const radius = Math.max(0, Math.min(3, Math.floor((thicknessPx - 1) / 2)));
+
+  for (let i = 0; i < lm.length; i++) {
+    if (lm[i] !== 0) continue;
+
+    const x = i % width;
+    const y = (i / width) | 0;
+
+    for (let dy = -radius; dy <= radius; dy++) {
+      const ny = y + dy;
+      if (ny < 0 || ny >= height) continue;
+
+      for (let dx = -radius; dx <= radius; dx++) {
+        const nx = x + dx;
+        if (nx < 0 || nx >= width) continue;
+        const j = (ny * width + nx) * 4;
+        out[j] = r;
+        out[j + 1] = g;
+        out[j + 2] = b;
+        out[j + 3] = 255;
+      }
+    }
+  }
+
+  const img = new ImageData(out, width, height);
+  ctx.putImageData(img, 0, 0);
 };
 
 const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   regionData,
-  outlinesUrl,
+  outlinesUrl: _outlinesUrl,
   coloredIllustrationUrl,
   initialRegionColors = {},
   selectedColor,
@@ -101,7 +104,9 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const hintsCanvasRef = useRef<HTMLCanvasElement>(null);
   const outlinesCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Outlines loaded state
+  // Outline rendering (derived from label map)
+  const [outlinesEnabled, setOutlinesEnabled] = useState(true);
+  const [outlineThicknessPx, setOutlineThicknessPx] = useState(3);
   const [outlinesReady, setOutlinesReady] = useState(false);
 
   // Engine State
@@ -135,77 +140,31 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const lastPaintedRegionId = useRef<number>(-1);
   const strokeChangesRef = useRef<Record<number, string>>({});
 
-  // 0) Load outlines onto a dedicated canvas (reliable approach)
+  // 0) Render outlines directly from the label map (no external assets)
   useEffect(() => {
-    if (!outlinesUrl || !outlinesCanvasRef.current) return;
-    
-    const canvas = outlinesCanvasRef.current;
-    const ctx = canvas.getContext("2d");
+    if (!outlinesCanvasRef.current) return;
+    if (!regionData || regionData.labelMap.length === 0) return;
+
+    const ctx = outlinesCanvasRef.current.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
-    
-    setOutlinesReady(false);
-    
-    const loadOutlines = async () => {
-      try {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        
-        // For SVG data URLs or SVG files, we need to handle them properly
-        if (outlinesUrl.includes("svg")) {
-          // Fetch and process SVG to ensure black outlines
-          const isSvgDataUrl = outlinesUrl.startsWith("data:image/svg");
-          let svgText: string;
-          
-          if (isSvgDataUrl) {
-            // Decode base64 SVG
-            const base64Part = outlinesUrl.split(",")[1];
-            svgText = atob(base64Part);
-          } else {
-            const res = await fetch(outlinesUrl);
-            svgText = await res.text();
-          }
-          
-          // Normalize SVG: ensure all paths are black
-          const normalized = normalizeOutlineSvg(svgText, outlineColor);
-          
-          // Convert normalized SVG to data URL for img loading
-          const blob = new Blob([normalized], { type: "image/svg+xml" });
-          const url = URL.createObjectURL(blob);
-          img.src = url;
-          
-          await new Promise<void>((resolve, reject) => {
-            img.onload = () => {
-              URL.revokeObjectURL(url);
-              resolve();
-            };
-            img.onerror = () => {
-              URL.revokeObjectURL(url);
-              reject();
-            };
-          });
-        } else {
-          // Regular image URL
-          img.src = outlinesUrl;
-          await new Promise<void>((resolve, reject) => {
-            img.onload = () => resolve();
-            img.onerror = () => reject();
-          });
-        }
-        
-        // Clear and draw outlines to canvas
-        ctx.clearRect(0, 0, width, height);
-        ctx.drawImage(img, 0, 0, width, height);
-        
-        setOutlinesReady(true);
-        console.log("Outlines rendered to canvas successfully");
-      } catch (err) {
-        console.error("Failed to load outlines:", err);
-        setOutlinesReady(false);
-      }
-    };
-    
-    loadOutlines();
-  }, [outlinesUrl, outlineColor, width, height]);
+
+    if (!outlinesEnabled) {
+      ctx.clearRect(0, 0, width, height);
+      setOutlinesReady(false);
+      return;
+    }
+
+    renderOutlinesFromLabelMap({
+      ctx,
+      regionData,
+      width,
+      height,
+      colorHex: outlineColor,
+      thicknessPx: outlineThicknessPx,
+    });
+
+    setOutlinesReady(true);
+  }, [regionData, width, height, outlineColor, outlinesEnabled, outlineThicknessPx]);
 
   // 1. Initial Fit
   useEffect(() => {
@@ -378,7 +337,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       ctx.globalCompositeOperation = "source-over";
     }
 
-    // Outline layer from our dedicated canvas
+    // Outline layer
     if (outlinesCanvasRef.current && outlinesReady) {
       ctx.drawImage(outlinesCanvasRef.current, 0, 0);
     }
@@ -573,7 +532,37 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             <i className="fa-solid fa-up-down-left-right mr-2"></i> Move
           </button>
         </div>
+
         <div className="w-px h-6 bg-gray-300"></div>
+
+        {/* Outline controls */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setOutlinesEnabled((v) => !v)}
+            className={`w-8 h-8 rounded-full transition-all flex items-center justify-center ${
+              outlinesEnabled ? "bg-gray-900 text-white shadow-md" : "hover:bg-gray-100 text-gray-500"
+            }`}
+            title={outlinesEnabled ? "Hide outlines" : "Show outlines"}
+          >
+            <i className={`fa-solid ${outlinesEnabled ? "fa-border-all" : "fa-square"}`}></i>
+          </button>
+
+          <div className="flex items-center gap-2 text-sm text-gray-600">
+            <span className="font-bold">Lines</span>
+            <input
+              type="range"
+              min={1}
+              max={7}
+              value={outlineThicknessPx}
+              onChange={(e) => setOutlineThicknessPx(parseInt(e.target.value, 10))}
+              className="accent-gray-900"
+              title="Outline thickness"
+            />
+          </div>
+        </div>
+
+        <div className="w-px h-6 bg-gray-300"></div>
+
         <div className="flex gap-2 text-gray-600 items-center">
           {coloredIllustrationUrl && (
             <>
