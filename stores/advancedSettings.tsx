@@ -10,6 +10,12 @@ export interface AdvancedSettings {
   gapClosingRadius: number;        // morphological close radius (0-5)
   edgeBorderWidth: number;         // width of border added to edges to prevent leakage (0-10)
   
+  // === SVG Vectorization ===
+  svgLineSmoothness: number;       // 0-2, line tolerance (lower = more detail)
+  svgCurveSmoothness: number;      // 0-2, curve tolerance (lower = more accurate curves)
+  svgPathOmit: number;             // 0-100, omit paths smaller than this (0 = keep all)
+  svgRoundCoords: number;          // 0-3, decimal places for coordinates (higher = more precision)
+  
   // === Region Detection ===
   minRegionSizeForHints: number;   // min region size to show hints
   noiseNeighborThreshold: number;  // neighbors needed to not be "noise"
@@ -44,6 +50,12 @@ export const DEFAULT_SETTINGS: AdvancedSettings = {
   despeckleMinSize: 15,
   gapClosingRadius: 1,
   edgeBorderWidth: 2,
+  
+  // SVG Vectorization
+  svgLineSmoothness: 0.5,
+  svgCurveSmoothness: 0.5,
+  svgPathOmit: 0,
+  svgRoundCoords: 1,
   
   // Region Detection
   minRegionSizeForHints: 100,
@@ -110,6 +122,12 @@ export const SETTING_CATEGORIES: Record<keyof AdvancedSettings, SettingCategory>
   minFillLuminance: 'reprocess',
   darkFillBoost: 'reprocess',
   noiseNeighborThreshold: 'reprocess',
+  
+  // SVG Vectorization - requires reprocess
+  svgLineSmoothness: 'reprocess',
+  svgCurveSmoothness: 'reprocess',
+  svgPathOmit: 'reprocess',
+  svgRoundCoords: 'reprocess',
   
   // Palette - only re-extract palette
   paletteSampleStep: 'palette',

@@ -382,6 +382,54 @@ const AdvancedPanel: React.FC<AdvancedPanelProps> = ({
           />
         </Section>
 
+        <Section title="SVG Vectorization" icon="fa-bezier-curve" badge={<CategoryBadge category="reprocess" />}>
+          <p className="text-xs text-gray-500 mb-3">
+            Controls how outlines are converted to scalable vector graphics (SVG) for crisp zooming.
+          </p>
+          <Slider
+            label="Line Smoothness"
+            description="Lower = more detail preserved, higher = smoother lines."
+            value={settings.svgLineSmoothness}
+            min={0.1}
+            max={2}
+            step={0.1}
+            onChange={(v) => updateSetting('svgLineSmoothness', v)}
+            defaultValue={DEFAULT_SETTINGS.svgLineSmoothness}
+            category={SETTING_CATEGORIES.svgLineSmoothness}
+          />
+          <Slider
+            label="Curve Smoothness"
+            description="Lower = more accurate curves, higher = simplified curves."
+            value={settings.svgCurveSmoothness}
+            min={0.1}
+            max={2}
+            step={0.1}
+            onChange={(v) => updateSetting('svgCurveSmoothness', v)}
+            defaultValue={DEFAULT_SETTINGS.svgCurveSmoothness}
+            category={SETTING_CATEGORIES.svgCurveSmoothness}
+          />
+          <Slider
+            label="Path Omit Threshold"
+            description="Omit paths smaller than this size (0 = keep all, prevents thin lines from disappearing)."
+            value={settings.svgPathOmit}
+            min={0}
+            max={100}
+            onChange={(v) => updateSetting('svgPathOmit', v)}
+            defaultValue={DEFAULT_SETTINGS.svgPathOmit}
+            category={SETTING_CATEGORIES.svgPathOmit}
+          />
+          <Slider
+            label="Coordinate Precision"
+            description="Decimal places for SVG coordinates (higher = smoother at extreme zoom)."
+            value={settings.svgRoundCoords}
+            min={0}
+            max={3}
+            onChange={(v) => updateSetting('svgRoundCoords', v)}
+            defaultValue={DEFAULT_SETTINGS.svgRoundCoords}
+            category={SETTING_CATEGORIES.svgRoundCoords}
+          />
+        </Section>
+
         <Section title="Region Detection" icon="fa-vector-square" badge={<CategoryBadge category="live" />}>
           <Slider
             label="Min Region Size for Hints"

@@ -1,5 +1,5 @@
 
-import { vectorizeImageData } from '../utils/vectorize';
+import { vectorizeImageData, VectorizationOptions } from '../utils/vectorize';
 import { OutlineThickness } from '../types';
 import { MEDIAN_FILTER_THRESHOLD, DESPECKLE_MIN_SIZE } from '../constants';
 import type { AdvancedSettings } from '../stores/advancedSettings';
@@ -10,6 +10,11 @@ export interface OutlineSettings {
   despeckleMinSize?: number;
   gapClosingRadius?: number;
   edgeBorderWidth?: number;
+  // SVG Vectorization options
+  svgLineSmoothness?: number;
+  svgCurveSmoothness?: number;
+  svgPathOmit?: number;
+  svgRoundCoords?: number;
 }
 
 /**
@@ -45,8 +50,16 @@ export const outlineService = {
         cleanImage.data[idx+3] = 255; // Alpha opaque
     }
 
-    // Vectorize
-    const vectorResult = await vectorizeImageData(cleanImage);
+    // Build SVG vectorization options from settings
+    const svgOptions: VectorizationOptions = {
+      lineSmoothness: settings?.svgLineSmoothness,
+      curveSmoothness: settings?.svgCurveSmoothness,
+      pathOmit: settings?.svgPathOmit,
+      roundCoords: settings?.svgRoundCoords,
+    };
+
+    // Vectorize with options
+    const vectorResult = await vectorizeImageData(cleanImage, svgOptions);
     return vectorResult.outlines;
   },
 
