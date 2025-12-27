@@ -28,8 +28,8 @@ const AppContent: React.FC = () => {
   // --- Architecture: Separation of Concerns ---
   // The UI Layer (App.tsx) only handles View State. 
   // The Logic Layer (useJobProcessor) handles the AI/Image Pipeline.
-  const { activeJob, error: jobError, startJob, startDirectProcessingJob, resetJob } = useJobProcessor();
-  const { isAdvancedMode, setIsAdvancedMode, settings: advancedSettings } = useAdvancedSettings();
+  const { activeJob, error: jobError, startJob, startDirectProcessingJob, reprocessFromStep, isReprocessing, resetJob } = useJobProcessor();
+  const { isAdvancedMode, setIsAdvancedMode, settings: advancedSettings, getRequiredRegenLevel, clearChangedSettings } = useAdvancedSettings();
   
 
   // --- State: Application Flow ---
@@ -315,9 +315,21 @@ const AppContent: React.FC = () => {
       } catch (e) {
          console.error("Failed to update outlines", e);
          setUiError("Failed to update outlines.");
-      } finally {
-         setProcessingHints(false);
       }
+  };
+
+  // Handle reprocessing with advanced settings
+  const handleReprocess = () => {
+    if (!activeBundle) return;
+    
+    const level = getRequiredRegenLevel();
+    if (!level) return;
+    
+    reprocessFromStep(level, activeBundle, genSettings, advancedSettings, (updatedBundle) => {
+      setActiveBundle(updatedBundle);
+      setCurrentRegionColors({}); // Reset coloring since regions may have changed
+      clearChangedSettings();
+    });
   };
 
   // --- Render ---
@@ -732,6 +744,8 @@ const AppContent: React.FC = () => {
       {/* Advanced Panel */}
       {isAdvancedMode && (
         <AdvancedPanel 
+          onReprocess={handleReprocess}
+          isReprocessing={isReprocessing}
           onDirectImport={handleDirectImport}
           isProcessingDirect={state === 'job_running'}
         />
