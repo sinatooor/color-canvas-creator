@@ -11,6 +11,8 @@ import AuthModal from './components/AuthModal';
 import SettingsModal from './components/SettingsModal';
 import ProjectsGallery from './components/ProjectsGallery';
 import CompletionModal from './components/CompletionModal';
+import AdvancedPanel from './components/AdvancedPanel';
+import { AdvancedSettingsProvider, useAdvancedSettings } from './stores/advancedSettings';
 
 declare global {
   interface AIStudio {
@@ -22,11 +24,12 @@ declare global {
   }
 }
 
-const App: React.FC = () => {
+const AppContent: React.FC = () => {
   // --- Architecture: Separation of Concerns ---
   // The UI Layer (App.tsx) only handles View State. 
   // The Logic Layer (useJobProcessor) handles the AI/Image Pipeline.
   const { activeJob, error: jobError, startJob, resetJob } = useJobProcessor();
+  const { isAdvancedMode, setIsAdvancedMode } = useAdvancedSettings();
 
   // --- State: Application Flow ---
   const [state, setState] = useState<AppState>('idle');
@@ -698,8 +701,26 @@ const App: React.FC = () => {
           </div>
         )}
       </main>
+
+      {/* Advanced Mode Toggle Button */}
+      <button
+        onClick={() => setIsAdvancedMode(true)}
+        className="fixed bottom-4 right-4 bg-gray-800/80 hover:bg-gray-800 text-white px-3 py-1.5 rounded-lg text-xs font-medium opacity-50 hover:opacity-100 transition-all z-40 flex items-center gap-2"
+      >
+        <i className="fa-solid fa-flask"></i>
+        Advanced
+      </button>
+
+      {/* Advanced Panel */}
+      {isAdvancedMode && <AdvancedPanel />}
     </div>
   );
 };
+
+const App: React.FC = () => (
+  <AdvancedSettingsProvider>
+    <AppContent />
+  </AdvancedSettingsProvider>
+);
 
 export default App;
