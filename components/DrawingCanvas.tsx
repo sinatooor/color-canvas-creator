@@ -653,9 +653,10 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
               alt="Outlines"
               className="absolute inset-0 z-20 pointer-events-none"
               style={{
-                width: '100%',
-                height: '100%',
-                imageRendering: 'auto',
+                width: "100%",
+                height: "100%",
+                imageRendering: "auto",
+                mixBlendMode: "multiply",
               }}
               onLoad={() => setSvgLoaded(true)}
               onError={() => setSvgLoaded(false)}
