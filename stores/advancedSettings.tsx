@@ -8,6 +8,7 @@ export interface AdvancedSettings {
   medianFilterThreshold: number;   // 0-255, threshold for binarization
   despeckleMinSize: number;        // min connected component size to keep
   gapClosingRadius: number;        // morphological close radius (0-5)
+  edgeBorderWidth: number;         // width of border added to edges to prevent leakage (0-10)
   
   // === Region Detection ===
   minRegionSizeForHints: number;   // min region size to show hints
@@ -42,6 +43,7 @@ export const DEFAULT_SETTINGS: AdvancedSettings = {
   medianFilterThreshold: 128,
   despeckleMinSize: 15,
   gapClosingRadius: 1,
+  edgeBorderWidth: 2,
   
   // Region Detection
   minRegionSizeForHints: 100,
@@ -103,6 +105,7 @@ export const SETTING_CATEGORIES: Record<keyof AdvancedSettings, SettingCategory>
   medianFilterThreshold: 'reprocess',
   despeckleMinSize: 'reprocess',
   gapClosingRadius: 'reprocess',
+  edgeBorderWidth: 'reprocess',
   grayOutlineThreshold: 'reprocess',
   minFillLuminance: 'reprocess',
   darkFillBoost: 'reprocess',
