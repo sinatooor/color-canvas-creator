@@ -1,5 +1,5 @@
 
-import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef, ReactNode } from 'react';
 
 // All configurable parameters with their default values
 export interface AdvancedSettings {
@@ -84,6 +84,41 @@ NEGATIVE PROMPT (CRITICAL):
 Output a clean, vector-style line art image suitable for a coloring book.`
 };
 
+// Categories for regeneration requirements
+export type SettingCategory = 'api' | 'reprocess' | 'palette' | 'live';
+
+export const SETTING_CATEGORIES: Record<keyof AdvancedSettings, SettingCategory> = {
+  // API - requires full Gemini API call
+  promptStyleClassic: 'api',
+  promptStyleStainedGlass: 'api',
+  promptStyleMandala: 'api',
+  promptStyleAnime: 'api',
+  promptComplexityLow: 'api',
+  promptComplexityMedium: 'api',
+  promptComplexityHigh: 'api',
+  promptLineArt: 'api',
+  
+  // Reprocess - requires outline/region recomputation
+  wallThreshold: 'reprocess',
+  medianFilterThreshold: 'reprocess',
+  despeckleMinSize: 'reprocess',
+  gapClosingRadius: 'reprocess',
+  grayOutlineThreshold: 'reprocess',
+  minFillLuminance: 'reprocess',
+  darkFillBoost: 'reprocess',
+  noiseNeighborThreshold: 'reprocess',
+  
+  // Palette - only re-extract palette
+  paletteSampleStep: 'palette',
+  paletteKMeansK: 'palette',
+  paletteKMeansMaxIterations: 'palette',
+  paletteBlackThreshold: 'palette',
+  paletteWhiteThreshold: 'palette',
+  
+  // Live - display-only, instant
+  minRegionSizeForHints: 'live',
+};
+
 interface AdvancedSettingsContextType {
   settings: AdvancedSettings;
   updateSetting: <K extends keyof AdvancedSettings>(key: K, value: AdvancedSettings[K]) => void;
@@ -92,6 +127,9 @@ interface AdvancedSettingsContextType {
   importSettings: (json: string) => boolean;
   isAdvancedMode: boolean;
   setIsAdvancedMode: (v: boolean) => void;
+  changedSettings: Set<keyof AdvancedSettings>;
+  clearChangedSettings: () => void;
+  getRequiredRegenLevel: () => SettingCategory | null;
 }
 
 const AdvancedSettingsContext = createContext<AdvancedSettingsContextType | null>(null);
@@ -99,13 +137,20 @@ const AdvancedSettingsContext = createContext<AdvancedSettingsContextType | null
 export const AdvancedSettingsProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [settings, setSettings] = useState<AdvancedSettings>(DEFAULT_SETTINGS);
   const [isAdvancedMode, setIsAdvancedMode] = useState(false);
+  const changedSettingsRef = useRef<Set<keyof AdvancedSettings>>(new Set());
 
   const updateSetting = useCallback(<K extends keyof AdvancedSettings>(key: K, value: AdvancedSettings[K]) => {
-    setSettings(prev => ({ ...prev, [key]: value }));
+    setSettings(prev => {
+      if (prev[key] !== value) {
+        changedSettingsRef.current.add(key);
+      }
+      return { ...prev, [key]: value };
+    });
   }, []);
 
   const resetToDefaults = useCallback(() => {
     setSettings(DEFAULT_SETTINGS);
+    changedSettingsRef.current.clear();
   }, []);
 
   const exportSettings = useCallback(() => {
@@ -116,10 +161,33 @@ export const AdvancedSettingsProvider: React.FC<{ children: ReactNode }> = ({ ch
     try {
       const parsed = JSON.parse(json);
       setSettings({ ...DEFAULT_SETTINGS, ...parsed });
+      changedSettingsRef.current.clear();
       return true;
     } catch {
       return false;
     }
+  }, []);
+
+  const clearChangedSettings = useCallback(() => {
+    changedSettingsRef.current.clear();
+  }, []);
+
+  // Determine highest priority regeneration level needed
+  const getRequiredRegenLevel = useCallback((): SettingCategory | null => {
+    const changed = changedSettingsRef.current;
+    if (changed.size === 0) return null;
+    
+    // Priority: api > reprocess > palette > live
+    for (const key of changed) {
+      if (SETTING_CATEGORIES[key] === 'api') return 'api';
+    }
+    for (const key of changed) {
+      if (SETTING_CATEGORIES[key] === 'reprocess') return 'reprocess';
+    }
+    for (const key of changed) {
+      if (SETTING_CATEGORIES[key] === 'palette') return 'palette';
+    }
+    return 'live';
   }, []);
 
   return (
@@ -130,7 +198,10 @@ export const AdvancedSettingsProvider: React.FC<{ children: ReactNode }> = ({ ch
       exportSettings,
       importSettings,
       isAdvancedMode,
-      setIsAdvancedMode
+      setIsAdvancedMode,
+      changedSettings: changedSettingsRef.current,
+      clearChangedSettings,
+      getRequiredRegenLevel
     }}>
       {children}
     </AdvancedSettingsContext.Provider>

@@ -1,15 +1,26 @@
 
-import { useState, useCallback } from 'react';
-import { Job, GenerationSettings, ProjectBundle, OutlineThickness } from '../types';
+import { useState, useCallback, useRef } from 'react';
+import { Job, GenerationSettings, ProjectBundle, OutlineThickness, Color } from '../types';
 import { transformToIllustration } from '../services/geminiService';
 import { outlineService } from '../services/outlineService';
-import { validateAndFixFrame, extractPalette } from '../utils/imageProcessing';
+import { validateAndFixFrame, extractPalette, ImageProcessingSettings } from '../utils/imageProcessing';
 import { computeLabelMap } from '../utils/labeling';
 import { DEFAULT_PALETTE } from '../constants';
+import { AdvancedSettings, SettingCategory } from '../stores/advancedSettings';
+
+// Cached intermediate results for smart reprocessing
+interface ProcessingCache {
+  coloredIllustration: string;
+  validatedImageData: ImageData;
+  width: number;
+  height: number;
+}
 
 export const useJobProcessor = () => {
   const [activeJob, setActiveJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isReprocessing, setIsReprocessing] = useState(false);
+  const cacheRef = useRef<ProcessingCache | null>(null);
 
   const createJob = (id: string): Job => ({
     id,
@@ -41,7 +52,12 @@ export const useJobProcessor = () => {
     };
   };
 
-  const startJob = useCallback(async (base64Image: string, settings: GenerationSettings, onSuccess: (bundle: ProjectBundle) => void) => {
+  const startJob = useCallback(async (
+    base64Image: string, 
+    settings: GenerationSettings, 
+    onSuccess: (bundle: ProjectBundle) => void,
+    advancedSettings?: AdvancedSettings
+  ) => {
     const jobId = crypto.randomUUID();
     let job = createJob(jobId);
     setActiveJob(job);
@@ -76,13 +92,34 @@ export const useJobProcessor = () => {
       
       let imageData = ctx.getImageData(0, 0, width, height);
       
+      // Build processing settings from advanced settings
+      const processingSettings: ImageProcessingSettings | undefined = advancedSettings ? {
+        grayOutlineThreshold: advancedSettings.grayOutlineThreshold,
+        minFillLuminance: advancedSettings.minFillLuminance,
+        darkFillBoost: advancedSettings.darkFillBoost,
+        noiseNeighborThreshold: advancedSettings.noiseNeighborThreshold,
+        paletteSampleStep: advancedSettings.paletteSampleStep,
+        paletteKMeansK: advancedSettings.paletteKMeansK,
+        paletteKMeansMaxIterations: advancedSettings.paletteKMeansMaxIterations,
+        paletteBlackThreshold: advancedSettings.paletteBlackThreshold,
+        paletteWhiteThreshold: advancedSettings.paletteWhiteThreshold,
+      } : undefined;
+      
       // Perform CV Fixes
-      imageData = validateAndFixFrame(imageData);
+      imageData = validateAndFixFrame(imageData, processingSettings);
       ctx.putImageData(imageData, 0, 0);
       const validatedIllustration = canvas.toDataURL('image/png');
       
+      // Cache for reprocessing
+      cacheRef.current = {
+        coloredIllustration,
+        validatedImageData: ctx.getImageData(0, 0, width, height),
+        width,
+        height
+      };
+      
       // Extract optimized palette
-      const extractedPalette = extractPalette(imageData);
+      const extractedPalette = extractPalette(imageData, processingSettings);
       
       job = updateJobStep(job, 'cv_validate', 'completed', 45);
       setActiveJob(job);
@@ -91,11 +128,18 @@ export const useJobProcessor = () => {
       job = updateJobStep(job, 'generate_outlines', 'running', 50);
       setActiveJob(job);
       
+      // Build outline settings
+      const outlineSettings = advancedSettings ? {
+        medianFilterThreshold: advancedSettings.medianFilterThreshold,
+        despeckleMinSize: advancedSettings.despeckleMinSize,
+        gapClosingRadius: advancedSettings.gapClosingRadius
+      } : undefined;
+      
       // Generate repaired data for logic map
-      const repairedImageData = outlineService.processAndRepairImage(imageData, settings.thickness);
+      const repairedImageData = outlineService.processAndRepairImage(imageData, settings.thickness, outlineSettings);
       
       // Generate Visual SVG
-      const outlinesSvg = await outlineService.generateLeakProofOutlines(imageData, settings.thickness);
+      const outlinesSvg = await outlineService.generateLeakProofOutlines(imageData, settings.thickness, outlineSettings);
 
       job = updateJobStep(job, 'generate_outlines', 'completed', 75);
       setActiveJob(job);
@@ -104,7 +148,12 @@ export const useJobProcessor = () => {
       job = updateJobStep(job, 'build_region_map', 'running', 80);
       setActiveJob(job);
 
-      const regionData = computeLabelMap(repairedImageData);
+      const labelingSettings = advancedSettings ? {
+        wallThreshold: advancedSettings.wallThreshold,
+        minRegionSizeForHints: advancedSettings.minRegionSizeForHints
+      } : undefined;
+
+      const regionData = computeLabelMap(repairedImageData, labelingSettings);
       
       job = updateJobStep(job, 'build_region_map', 'completed', 90);
       setActiveJob(job);
@@ -144,15 +193,126 @@ export const useJobProcessor = () => {
     }
   }, []);
 
+  // Smart reprocessing based on what changed
+  const reprocessFromStep = useCallback(async (
+    level: SettingCategory,
+    currentBundle: ProjectBundle,
+    settings: GenerationSettings,
+    advancedSettings: AdvancedSettings,
+    onSuccess: (bundle: ProjectBundle) => void
+  ) => {
+    if (!cacheRef.current) {
+      setError("No cached data available. Please regenerate the image.");
+      return;
+    }
+
+    setIsReprocessing(true);
+    setError(null);
+
+    try {
+      const { coloredIllustration, width, height } = cacheRef.current;
+      
+      // Recreate imageData from cached illustration
+      const img = new Image();
+      img.src = coloredIllustration;
+      await new Promise((resolve) => { img.onload = resolve; });
+      
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error("Canvas context init failed");
+      ctx.drawImage(img, 0, 0);
+      
+      let imageData = ctx.getImageData(0, 0, width, height);
+      
+      const processingSettings: ImageProcessingSettings = {
+        grayOutlineThreshold: advancedSettings.grayOutlineThreshold,
+        minFillLuminance: advancedSettings.minFillLuminance,
+        darkFillBoost: advancedSettings.darkFillBoost,
+        noiseNeighborThreshold: advancedSettings.noiseNeighborThreshold,
+        paletteSampleStep: advancedSettings.paletteSampleStep,
+        paletteKMeansK: advancedSettings.paletteKMeansK,
+        paletteKMeansMaxIterations: advancedSettings.paletteKMeansMaxIterations,
+        paletteBlackThreshold: advancedSettings.paletteBlackThreshold,
+        paletteWhiteThreshold: advancedSettings.paletteWhiteThreshold,
+      };
+
+      let newPalette: Color[] = currentBundle.palette;
+      let newOutlinesSvg = currentBundle.layers.outlines;
+      let newRegionData = currentBundle.layers.regions;
+      let validatedIllustration = currentBundle.assets.coloredPreviewUrl;
+
+      // Level: palette - only re-extract palette
+      if (level === 'palette' || level === 'reprocess') {
+        newPalette = extractPalette(imageData, processingSettings);
+        if (newPalette.length === 0) newPalette = DEFAULT_PALETTE;
+      }
+
+      // Level: reprocess - re-run CV validation, outlines, region map
+      if (level === 'reprocess') {
+        // CV validation
+        imageData = validateAndFixFrame(imageData, processingSettings);
+        ctx.putImageData(imageData, 0, 0);
+        validatedIllustration = canvas.toDataURL('image/png');
+        
+        // Update cache
+        cacheRef.current.validatedImageData = ctx.getImageData(0, 0, width, height);
+
+        const outlineSettings = {
+          medianFilterThreshold: advancedSettings.medianFilterThreshold,
+          despeckleMinSize: advancedSettings.despeckleMinSize,
+          gapClosingRadius: advancedSettings.gapClosingRadius
+        };
+
+        // Regenerate outlines
+        const repairedImageData = outlineService.processAndRepairImage(imageData, settings.thickness, outlineSettings);
+        newOutlinesSvg = await outlineService.generateLeakProofOutlines(imageData, settings.thickness, outlineSettings);
+
+        // Rebuild region map
+        const labelingSettings = {
+          wallThreshold: advancedSettings.wallThreshold,
+          minRegionSizeForHints: advancedSettings.minRegionSizeForHints
+        };
+        newRegionData = computeLabelMap(repairedImageData, labelingSettings);
+      }
+
+      // Build updated bundle
+      const updatedBundle: ProjectBundle = {
+        ...currentBundle,
+        layers: {
+          regions: newRegionData,
+          outlines: newOutlinesSvg
+        },
+        assets: {
+          ...currentBundle.assets,
+          coloredPreviewUrl: validatedIllustration
+        },
+        palette: newPalette
+      };
+
+      onSuccess(updatedBundle);
+
+    } catch (err: any) {
+      const msg = err instanceof Error ? err.message : 'Reprocessing failed.';
+      setError(msg);
+    } finally {
+      setIsReprocessing(false);
+    }
+  }, []);
+
   const resetJob = useCallback(() => {
     setActiveJob(null);
     setError(null);
+    cacheRef.current = null;
   }, []);
 
   return {
     activeJob,
     error,
+    isReprocessing,
     startJob,
+    reprocessFromStep,
     resetJob
   };
 };
