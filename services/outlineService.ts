@@ -2,6 +2,14 @@
 import { vectorizeImageData } from '../utils/vectorize';
 import { OutlineThickness } from '../types';
 import { MEDIAN_FILTER_THRESHOLD, DESPECKLE_MIN_SIZE } from '../constants';
+import type { AdvancedSettings } from '../stores/advancedSettings';
+
+// Optional settings override for advanced mode
+export interface OutlineSettings {
+  medianFilterThreshold?: number;
+  despeckleMinSize?: number;
+  gapClosingRadius?: number;
+}
 
 /**
  * OutlineMakerService Module
@@ -75,23 +83,30 @@ const THICKNESS_RADIUS: Record<OutlineThickness, number> = {
 /**
  * Central Logic: Computes the binary wall mask from the input image.
  * SIMPLIFIED: Less aggressive processing to preserve original outlines better.
+ * @param settings Optional settings override for advanced mode tuning.
  */
-function computeCleanMask(imageData: ImageData, thickness: OutlineThickness): Uint8Array {
+function computeCleanMask(imageData: ImageData, thickness: OutlineThickness, settings?: OutlineSettings): Uint8Array {
     const width = imageData.width;
     const height = imageData.height;
 
+    const medianThreshold = settings?.medianFilterThreshold ?? MEDIAN_FILTER_THRESHOLD;
+    const despeckleSize = settings?.despeckleMinSize ?? DESPECKLE_MIN_SIZE;
+    const gapRadius = settings?.gapClosingRadius ?? 1;
+
     // 1. Direct threshold from image - no median filter to preserve outline fidelity
-    let mask = directThreshold(imageData);
+    let mask = directThreshold(imageData, medianThreshold);
     
     // 2. Light despeckle - only remove tiny noise specks
-    mask = removeSmallComponents(mask, width, height, DESPECKLE_MIN_SIZE); 
+    mask = removeSmallComponents(mask, width, height, despeckleSize); 
 
     // 3. Skip skeletonization to preserve original line widths
     // Only apply minimal thickening if needed for gap closing
     
-    // 4. Small gap closing only (1px close operation)
-    mask = morphDilateCircular(mask, width, height, 1);
-    mask = morphErodeCircular(mask, width, height, 1);
+    // 4. Small gap closing only
+    if (gapRadius > 0) {
+      mask = morphDilateCircular(mask, width, height, gapRadius);
+      mask = morphErodeCircular(mask, width, height, gapRadius);
+    }
 
     return mask;
 }
@@ -99,7 +114,7 @@ function computeCleanMask(imageData: ImageData, thickness: OutlineThickness): Ui
 /**
  * Simple threshold without median filter to preserve original outlines.
  */
-function directThreshold(imageData: ImageData): Uint8Array {
+function directThreshold(imageData: ImageData, threshold: number = MEDIAN_FILTER_THRESHOLD): Uint8Array {
     const { width, height, data } = imageData;
     const output = new Uint8Array(width * height);
     
@@ -113,7 +128,7 @@ function directThreshold(imageData: ImageData): Uint8Array {
         const maxChannel = Math.max(r, g, b);
         
         // Wall if pixel is dark enough
-        output[i] = maxChannel < MEDIAN_FILTER_THRESHOLD ? 1 : 0;
+        output[i] = maxChannel < threshold ? 1 : 0;
     }
     
     return output;

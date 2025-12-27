@@ -3,6 +3,12 @@ import { RegionData, ScanlineRun, Color } from "../types";
 import { hexToRgb } from "./floodFill";
 import { WALL_THRESHOLD, MIN_REGION_SIZE_FOR_HINTS } from "../constants";
 
+// Optional settings override for advanced mode
+export interface LabelingSettings {
+  wallThreshold?: number;
+  minRegionSizeForHints?: number;
+}
+
 /**
  * ARCHITECTURE IMPLEMENTATION: Label Map Generator
  * 
@@ -13,12 +19,14 @@ import { WALL_THRESHOLD, MIN_REGION_SIZE_FOR_HINTS } from "../constants";
  * PERFORMANCE: Uses Int32Array internally, converts to number[] for JSON serialization.
  * Future optimization: Use Uint32Array + Base64 encoding for ~4x size reduction.
  */
-export function computeLabelMap(imageData: ImageData): RegionData {
+export function computeLabelMap(imageData: ImageData, settings?: LabelingSettings): RegionData {
     const width = imageData.width;
     const height = imageData.height;
     const data = imageData.data;
     const labels = new Int32Array(width * height).fill(-1); // -1: Unvisited
     let currentLabel = 1;
+
+    const threshold = settings?.wallThreshold ?? WALL_THRESHOLD;
 
     // Helper: Check if a pixel is a boundary (Wall)
     // Uses max channel for more accurate dark pixel detection
@@ -27,7 +35,7 @@ export function computeLabelMap(imageData: ImageData): RegionData {
         const g = data[idx * 4 + 1];
         const b = data[idx * 4 + 2];
         const maxChannel = Math.max(r, g, b);
-        return maxChannel < WALL_THRESHOLD;
+        return maxChannel < threshold;
     };
 
     // Pre-allocate stack with estimated capacity for performance
@@ -170,9 +178,11 @@ export interface RegionHint {
 export function analyzeRegionHints(
     regionData: RegionData, 
     originalImageData: ImageData, 
-    palette: Color[]
+    palette: Color[],
+    settings?: LabelingSettings
 ): RegionHint[] {
     const { width, labelMap, maxRegionId } = regionData;
+    const minSize = settings?.minRegionSizeForHints ?? MIN_REGION_SIZE_FOR_HINTS;
     
     // Accumulators
     const sums = new Float64Array((maxRegionId + 1) * 5); // [xSum, ySum, count, rSum, gSum, bSum]... actually just pixel accumulation
@@ -210,7 +220,7 @@ export function analyzeRegionHints(
     const hints: RegionHint[] = [];
     
     for (let id = 1; id <= maxRegionId; id++) {
-        if (count[id] < MIN_REGION_SIZE_FOR_HINTS) continue;
+        if (count[id] < minSize) continue;
 
         const avgR = rSum[id] / count[id];
         const avgG = gSum[id] / count[id];
