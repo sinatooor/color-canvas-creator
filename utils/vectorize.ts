@@ -126,13 +126,14 @@ export async function vectorizeImageData(
         let keptPaths = 0;
 
         // Helper: detect if color is dark (ImageTracer outputs fill-based paths)
+        // More permissive threshold to catch gray outlines too
         const isDarkColor = (colorStr: string): boolean => {
             if (!colorStr) return true;
             const c = colorStr.toLowerCase().trim();
             if (c === 'black') return true;
-            if (c === 'white' || c === 'none') return false;
+            if (c === 'white' || c === 'none' || c === 'transparent') return false;
             
-            let r = 0, g = 0, b = 0;
+            let r = 255, g = 255, b = 255;
             if (c.startsWith('rgb')) {
                 const rgb = c.match(/\d+/g);
                 if (rgb && rgb.length >= 3) {
@@ -150,7 +151,8 @@ export async function vectorizeImageData(
                     b = parseInt(hex[2] + hex[2], 16);
                 }
             }
-            return (r + g + b) / 3 < 180;
+            // More permissive: anything below 220 average is considered "dark enough"
+            return (r + g + b) / 3 < 220;
         };
 
         paths.forEach(p => {
