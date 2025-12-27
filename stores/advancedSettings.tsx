@@ -1,5 +1,5 @@
 
-import React, { createContext, useContext, useState, useCallback, useRef, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef, type ReactNode } from 'react';
 
 // All configurable parameters with their default values
 export interface AdvancedSettings {
