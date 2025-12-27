@@ -746,15 +746,19 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
               ref={svgOutlineRef}
               src={outlinesUrl}
               alt="Outlines"
-              className="absolute inset-0 z-20 pointer-events-none"
+              className="absolute inset-0 z-40 pointer-events-none"
               style={{
                 width: "100%",
                 height: "100%",
                 imageRendering: "auto",
                 mixBlendMode: "multiply",
+                opacity: 1,
               }}
               onLoad={() => setSvgLoaded(true)}
-              onError={() => setSvgLoaded(false)}
+              onError={() => {
+                console.error("SVG outlines failed to load");
+                setSvgLoaded(false);
+              }}
             />
           )}
 
