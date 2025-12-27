@@ -4,6 +4,13 @@ interface VectorizationResult {
   regions: string;  
 }
 
+export interface VectorizationOptions {
+  lineSmoothness?: number;    // ltres: 0.1-2, default 0.5
+  curveSmoothness?: number;   // qtres: 0.1-2, default 0.5
+  pathOmit?: number;          // pathomit: 0-100, default 0
+  roundCoords?: number;       // roundcoords: 0-3, default 1
+}
+
 // Fallback loader for ImageTracer
 async function ensureImageTracerLoaded(): Promise<any> {
   if ((window as any).ImageTracer) {
@@ -42,10 +49,19 @@ async function ensureImageTracerLoaded(): Promise<any> {
   });
 }
 
-// New signature handling ImageData directly
-export async function vectorizeImageData(imageData: ImageData): Promise<VectorizationResult> {
+// New signature handling ImageData directly with configurable options
+export async function vectorizeImageData(
+  imageData: ImageData, 
+  options: VectorizationOptions = {}
+): Promise<VectorizationResult> {
     try {
         const ImageTracer = await ensureImageTracerLoaded();
+
+        // Apply defaults
+        const lineSmoothness = options.lineSmoothness ?? 0.5;
+        const curveSmoothness = options.curveSmoothness ?? 0.5;
+        const pathOmit = options.pathOmit ?? 0;
+        const roundCoords = options.roundCoords ?? 1;
 
         // 1. Force the input data to be strictly Opaque to avoid alpha confusion
         const cleanData = new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
@@ -54,15 +70,14 @@ export async function vectorizeImageData(imageData: ImageData): Promise<Vectoriz
         }
 
         // 2. Configuration optimized for vectorizing thin black outlines
-        // NOTE: If pathomit is too high, thin lines can disappear completely.
-        const options = {
+        const tracerOptions = {
             // Processing
             corsenabled: false,
-            // Lower thresholds preserve more detail
-            ltres: 0.5,
-            qtres: 0.5,
-            // CRITICAL: do not omit small paths (thin outlines)
-            pathomit: 0,
+            // Smoothness thresholds - configurable
+            ltres: lineSmoothness,
+            qtres: curveSmoothness,
+            // Path omit threshold - configurable (0 = keep all thin lines)
+            pathomit: pathOmit,
             rightangleenhance: false,
             
             // Colors
@@ -78,15 +93,15 @@ export async function vectorizeImageData(imageData: ImageData): Promise<Vectoriz
             viewbox: true,
             desc: false,
             
-            // Rounding helps smooth out sub-pixel jitter
-            roundcoords: 1,
+            // Coordinate rounding - configurable
+            roundcoords: roundCoords,
             
             // Palette (Strict B/W)
             pal: [{r:0,g:0,b:0,a:255}, {r:255,g:255,b:255,a:255}]
         };
 
         // 3. Generate SVG
-        const svgStr = ImageTracer.imagedataToSVG(cleanData, options);
+        const svgStr = ImageTracer.imagedataToSVG(cleanData, tracerOptions);
 
         // 4. Post-process to extract ONLY Black paths
         const parser = new DOMParser();

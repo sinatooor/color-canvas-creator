@@ -142,12 +142,16 @@ export const useJobProcessor = () => {
       job = updateJobStep(job, 'generate_outlines', 'running', 50);
       setActiveJob(job);
       
-      // Build outline settings
+      // Build outline settings (including SVG vectorization)
       const outlineSettings = advancedSettings ? {
         medianFilterThreshold: advancedSettings.medianFilterThreshold,
         despeckleMinSize: advancedSettings.despeckleMinSize,
         gapClosingRadius: advancedSettings.gapClosingRadius,
-        edgeBorderWidth: advancedSettings.edgeBorderWidth
+        edgeBorderWidth: advancedSettings.edgeBorderWidth,
+        svgLineSmoothness: advancedSettings.svgLineSmoothness,
+        svgCurveSmoothness: advancedSettings.svgCurveSmoothness,
+        svgPathOmit: advancedSettings.svgPathOmit,
+        svgRoundCoords: advancedSettings.svgRoundCoords,
       } : undefined;
       
       // Generate repaired data for logic map
@@ -278,7 +282,11 @@ export const useJobProcessor = () => {
           medianFilterThreshold: advancedSettings.medianFilterThreshold,
           despeckleMinSize: advancedSettings.despeckleMinSize,
           gapClosingRadius: advancedSettings.gapClosingRadius,
-          edgeBorderWidth: advancedSettings.edgeBorderWidth
+          edgeBorderWidth: advancedSettings.edgeBorderWidth,
+          svgLineSmoothness: advancedSettings.svgLineSmoothness,
+          svgCurveSmoothness: advancedSettings.svgCurveSmoothness,
+          svgPathOmit: advancedSettings.svgPathOmit,
+          svgRoundCoords: advancedSettings.svgRoundCoords,
         };
 
         // Regenerate outlines
@@ -382,12 +390,16 @@ export const useJobProcessor = () => {
       job = updateJobStep(job, 'generate_outlines', 'running', 40);
       setActiveJob(job);
       
-      // Build outline settings
+      // Build outline settings (including SVG vectorization)
       const outlineSettings = advancedSettings ? {
         medianFilterThreshold: advancedSettings.medianFilterThreshold,
         despeckleMinSize: advancedSettings.despeckleMinSize,
         gapClosingRadius: advancedSettings.gapClosingRadius,
-        edgeBorderWidth: advancedSettings.edgeBorderWidth
+        edgeBorderWidth: advancedSettings.edgeBorderWidth,
+        svgLineSmoothness: advancedSettings.svgLineSmoothness,
+        svgCurveSmoothness: advancedSettings.svgCurveSmoothness,
+        svgPathOmit: advancedSettings.svgPathOmit,
+        svgRoundCoords: advancedSettings.svgRoundCoords,
       } : undefined;
       
       // Generate repaired data for logic map
