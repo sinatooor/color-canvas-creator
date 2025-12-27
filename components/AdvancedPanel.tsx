@@ -361,6 +361,16 @@ const AdvancedPanel: React.FC<AdvancedPanelProps> = ({
             category={SETTING_CATEGORIES.gapClosingRadius}
           />
           <Slider
+            label="Edge Border Width"
+            description="Adds a border around image edges to prevent leakage where lines don't reach the edge."
+            value={settings.edgeBorderWidth}
+            min={0}
+            max={10}
+            onChange={(v) => updateSetting('edgeBorderWidth', v)}
+            defaultValue={DEFAULT_SETTINGS.edgeBorderWidth}
+            category={SETTING_CATEGORIES.edgeBorderWidth}
+          />
+          <Slider
             label="Gray Outline Threshold"
             description="Luminance below this is forced to pure black."
             value={settings.grayOutlineThreshold}

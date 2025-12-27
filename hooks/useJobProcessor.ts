@@ -146,7 +146,8 @@ export const useJobProcessor = () => {
       const outlineSettings = advancedSettings ? {
         medianFilterThreshold: advancedSettings.medianFilterThreshold,
         despeckleMinSize: advancedSettings.despeckleMinSize,
-        gapClosingRadius: advancedSettings.gapClosingRadius
+        gapClosingRadius: advancedSettings.gapClosingRadius,
+        edgeBorderWidth: advancedSettings.edgeBorderWidth
       } : undefined;
       
       // Generate repaired data for logic map
@@ -276,7 +277,8 @@ export const useJobProcessor = () => {
         const outlineSettings = {
           medianFilterThreshold: advancedSettings.medianFilterThreshold,
           despeckleMinSize: advancedSettings.despeckleMinSize,
-          gapClosingRadius: advancedSettings.gapClosingRadius
+          gapClosingRadius: advancedSettings.gapClosingRadius,
+          edgeBorderWidth: advancedSettings.edgeBorderWidth
         };
 
         // Regenerate outlines
@@ -384,7 +386,8 @@ export const useJobProcessor = () => {
       const outlineSettings = advancedSettings ? {
         medianFilterThreshold: advancedSettings.medianFilterThreshold,
         despeckleMinSize: advancedSettings.despeckleMinSize,
-        gapClosingRadius: advancedSettings.gapClosingRadius
+        gapClosingRadius: advancedSettings.gapClosingRadius,
+        edgeBorderWidth: advancedSettings.edgeBorderWidth
       } : undefined;
       
       // Generate repaired data for logic map

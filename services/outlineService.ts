@@ -9,6 +9,7 @@ export interface OutlineSettings {
   medianFilterThreshold?: number;
   despeckleMinSize?: number;
   gapClosingRadius?: number;
+  edgeBorderWidth?: number;
 }
 
 /**
@@ -92,6 +93,7 @@ function computeCleanMask(imageData: ImageData, thickness: OutlineThickness, set
     const medianThreshold = settings?.medianFilterThreshold ?? MEDIAN_FILTER_THRESHOLD;
     const despeckleSize = settings?.despeckleMinSize ?? DESPECKLE_MIN_SIZE;
     const gapRadius = settings?.gapClosingRadius ?? 1;
+    const edgeBorderWidth = settings?.edgeBorderWidth ?? 2;
 
     // 1. Direct threshold from image - no median filter to preserve outline fidelity
     let mask = directThreshold(imageData, medianThreshold);
@@ -108,7 +110,32 @@ function computeCleanMask(imageData: ImageData, thickness: OutlineThickness, set
       mask = morphErodeCircular(mask, width, height, gapRadius);
     }
 
+    // 5. Add edge border to prevent leakage at image boundaries
+    if (edgeBorderWidth > 0) {
+      mask = addEdgeBorder(mask, width, height, edgeBorderWidth);
+    }
+
     return mask;
+}
+
+/**
+ * Adds a solid border around the edges of the mask to prevent color leakage
+ * where lines don't reach the image edge.
+ */
+function addEdgeBorder(mask: Uint8Array, width: number, height: number, borderWidth: number): Uint8Array {
+    const output = new Uint8Array(mask);
+    
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            // Check if pixel is within border region
+            if (x < borderWidth || x >= width - borderWidth || 
+                y < borderWidth || y >= height - borderWidth) {
+                output[y * width + x] = 1; // Mark as wall
+            }
+        }
+    }
+    
+    return output;
 }
 
 /**
