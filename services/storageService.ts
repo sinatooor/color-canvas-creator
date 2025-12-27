@@ -1,139 +1,233 @@
 
-import { User, SavedProject } from '../types';
-
-// Keys for localStorage
-const USERS_KEY = 'fifocolor_users';
-const PROJECTS_KEY = 'fifocolor_projects';
-const CURRENT_USER_KEY = 'fifocolor_current_user_id';
-
-// Internal type for storage including password
-interface StoredUser extends User {
-  password?: string;
-}
-
-// Mock delay to simulate network
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+import { supabase } from '../src/integrations/supabase/client';
+import { User, SavedProject, ProjectBundle, TimelapseFrame } from '../types';
+import type { TablesInsert, TablesUpdate } from '../src/integrations/supabase/types';
 
 export const storageService = {
   // --- AUTH ---
   
   async login(email: string, password: string): Promise<User> {
-    await delay(500);
-    const users: StoredUser[] = JSON.parse(localStorage.getItem(USERS_KEY) || '[]');
-    const user = users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
     
-    if (!user) {
-      throw new Error('User not found. Please sign up.');
+    if (error) {
+      throw new Error(error.message);
     }
     
-    // Verify password if the user has one
-    if (user.password && user.password !== password) {
-      throw new Error('Incorrect password.');
+    if (!data.user) {
+      throw new Error('Login failed');
     }
     
-    localStorage.setItem(CURRENT_USER_KEY, user.id);
+    // Get profile data
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', data.user.id)
+      .maybeSingle();
     
-    // Return User without password
-    const { password: _, ...safeUser } = user;
-    return safeUser;
+    return {
+      id: data.user.id,
+      name: profile?.name || data.user.email || 'User',
+      email: data.user.email || '',
+      avatar: profile?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${data.user.id}`
+    };
   },
 
   async signup(name: string, email: string, password: string): Promise<User> {
-    await delay(500);
-    const users: StoredUser[] = JSON.parse(localStorage.getItem(USERS_KEY) || '[]');
+    const redirectUrl = `${window.location.origin}/`;
     
-    if (users.find((u) => u.email.toLowerCase() === email.toLowerCase())) {
-      throw new Error('Email already exists.');
-    }
-
-    if (password.length < 6) {
-      throw new Error('Password must be at least 6 characters.');
-    }
-
-    const newUser: StoredUser = {
-      id: crypto.randomUUID(),
-      name,
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${name}`
-    };
-
-    users.push(newUser);
-    localStorage.setItem(USERS_KEY, JSON.stringify(users));
-    localStorage.setItem(CURRENT_USER_KEY, newUser.id);
+      options: {
+        emailRedirectTo: redirectUrl,
+        data: {
+          name: name
+        }
+      }
+    });
     
-    // Return User without password
-    const { password: _, ...safeUser } = newUser;
-    return safeUser;
+    if (error) {
+      if (error.message.includes('already registered')) {
+        throw new Error('This email is already registered. Please sign in instead.');
+      }
+      throw new Error(error.message);
+    }
+    
+    if (!data.user) {
+      throw new Error('Signup failed');
+    }
+    
+    return {
+      id: data.user.id,
+      name: name,
+      email: data.user.email || email,
+      avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${data.user.id}`
+    };
   },
 
   async getCurrentUser(): Promise<User | null> {
-    const userId = localStorage.getItem(CURRENT_USER_KEY);
-    if (!userId) return null;
+    const { data: { session } } = await supabase.auth.getSession();
     
-    const users: StoredUser[] = JSON.parse(localStorage.getItem(USERS_KEY) || '[]');
-    const user = users.find((u) => u.id === userId);
+    if (!session?.user) {
+      return null;
+    }
     
-    if (!user) return null;
+    // Get profile data
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', session.user.id)
+      .maybeSingle();
     
-    const { password: _, ...safeUser } = user;
-    return safeUser;
+    return {
+      id: session.user.id,
+      name: profile?.name || session.user.email || 'User',
+      email: session.user.email || '',
+      avatar: profile?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${session.user.id}`
+    };
   },
 
   async logout(): Promise<void> {
-    localStorage.removeItem(CURRENT_USER_KEY);
+    await supabase.auth.signOut();
+  },
+
+  // Subscribe to auth changes
+  onAuthStateChange(callback: (user: User | null) => void) {
+    return supabase.auth.onAuthStateChange((event, session) => {
+      if (session?.user) {
+        // Defer profile fetch to avoid deadlock
+        setTimeout(async () => {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', session.user.id)
+            .maybeSingle();
+          
+          callback({
+            id: session.user.id,
+            name: profile?.name || session.user.email || 'User',
+            email: session.user.email || '',
+            avatar: profile?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${session.user.id}`
+          });
+        }, 0);
+      } else {
+        callback(null);
+      }
+    });
   },
 
   // --- PROJECTS ---
 
   async saveProject(project: Omit<SavedProject, 'id' | 'createdAt'>): Promise<SavedProject> {
-    await delay(600);
-    const projects = JSON.parse(localStorage.getItem(PROJECTS_KEY) || '[]');
-    
-    const newProject: SavedProject = {
-      ...project,
-      id: crypto.randomUUID(),
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+    const insertData: TablesInsert<'projects'> = {
+      user_id: project.userId,
+      name: project.name,
+      thumbnail_url: project.thumbnailUrl || null,
+      bundle: JSON.parse(JSON.stringify(project.bundle)),
+      current_state_url: project.currentStateUrl || null,
+      timelapse_log: project.timelapseLog ? JSON.parse(JSON.stringify(project.timelapseLog)) : null,
+      region_colors: project.regionColors ? JSON.parse(JSON.stringify(project.regionColors)) : null,
+      is_finished: project.isFinished || false
     };
-
-    projects.push(newProject);
-    localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
-    return newProject;
+    
+    const { data, error } = await supabase
+      .from('projects')
+      .insert(insertData)
+      .select()
+      .single();
+    
+    if (error) {
+      throw new Error(error.message);
+    }
+    
+    return {
+      id: data.id,
+      userId: data.user_id,
+      name: data.name,
+      thumbnailUrl: data.thumbnail_url || '',
+      bundle: data.bundle as unknown as ProjectBundle,
+      currentStateUrl: data.current_state_url || undefined,
+      timelapseLog: data.timelapse_log as unknown as TimelapseFrame[] || undefined,
+      regionColors: data.region_colors as unknown as Record<number, string> || undefined,
+      isFinished: data.is_finished || false,
+      createdAt: new Date(data.created_at).getTime(),
+      updatedAt: new Date(data.updated_at).getTime()
+    };
   },
 
   async updateProject(projectId: string, updates: Partial<SavedProject>): Promise<SavedProject> {
-    // No artificial delay for auto-save to keep UI snappy
-    const projects: SavedProject[] = JSON.parse(localStorage.getItem(PROJECTS_KEY) || '[]');
-    const index = projects.findIndex(p => p.id === projectId);
+    const updateData: Record<string, unknown> = {};
     
-    if (index === -1) {
-      throw new Error('Project not found');
+    if (updates.name !== undefined) updateData.name = updates.name;
+    if (updates.thumbnailUrl !== undefined) updateData.thumbnail_url = updates.thumbnailUrl;
+    if (updates.currentStateUrl !== undefined) updateData.current_state_url = updates.currentStateUrl;
+    if (updates.timelapseLog !== undefined) updateData.timelapse_log = updates.timelapseLog;
+    if (updates.regionColors !== undefined) updateData.region_colors = updates.regionColors;
+    if (updates.isFinished !== undefined) updateData.is_finished = updates.isFinished;
+    
+    const { data, error } = await supabase
+      .from('projects')
+      .update(updateData)
+      .eq('id', projectId)
+      .select()
+      .single();
+    
+    if (error) {
+      throw new Error(error.message);
     }
-
-    const updatedProject = {
-      ...projects[index],
-      ...updates,
-      updatedAt: Date.now()
+    
+    return {
+      id: data.id,
+      userId: data.user_id,
+      name: data.name,
+      thumbnailUrl: data.thumbnail_url || '',
+      bundle: data.bundle as unknown as ProjectBundle,
+      currentStateUrl: data.current_state_url || undefined,
+      timelapseLog: data.timelapse_log as unknown as TimelapseFrame[] || undefined,
+      regionColors: data.region_colors as unknown as Record<number, string> || undefined,
+      isFinished: data.is_finished || false,
+      createdAt: new Date(data.created_at).getTime(),
+      updatedAt: new Date(data.updated_at).getTime()
     };
-
-    projects[index] = updatedProject;
-    localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
-    return updatedProject;
   },
 
   async getUserProjects(userId: string): Promise<SavedProject[]> {
-    await delay(400);
-    const projects = JSON.parse(localStorage.getItem(PROJECTS_KEY) || '[]');
-    return projects
-      .filter((p: SavedProject) => p.userId === userId)
-      .sort((a: SavedProject, b: SavedProject) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt));
+    const { data, error } = await supabase
+      .from('projects')
+      .select('*')
+      .eq('user_id', userId)
+      .order('updated_at', { ascending: false });
+    
+    if (error) {
+      throw new Error(error.message);
+    }
+    
+    return (data || []).map(row => ({
+      id: row.id,
+      userId: row.user_id,
+      name: row.name,
+      thumbnailUrl: row.thumbnail_url || '',
+      bundle: row.bundle as unknown as ProjectBundle,
+      currentStateUrl: row.current_state_url || undefined,
+      timelapseLog: row.timelapse_log as unknown as TimelapseFrame[] || undefined,
+      regionColors: row.region_colors as unknown as Record<number, string> || undefined,
+      isFinished: row.is_finished || false,
+      createdAt: new Date(row.created_at).getTime(),
+      updatedAt: new Date(row.updated_at).getTime()
+    }));
   },
 
   async deleteProject(projectId: string): Promise<void> {
-    await delay(300);
-    let projects = JSON.parse(localStorage.getItem(PROJECTS_KEY) || '[]');
-    projects = projects.filter((p: SavedProject) => p.id !== projectId);
-    localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
+    const { error } = await supabase
+      .from('projects')
+      .delete()
+      .eq('id', projectId);
+    
+    if (error) {
+      throw new Error(error.message);
+    }
   }
 };
