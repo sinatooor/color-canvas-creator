@@ -1,15 +1,18 @@
+import { Color } from '../types';
+import { AdvancedSettings, DEFAULT_SETTINGS } from '../stores/advancedSettings';
 
-import { Color, Hint } from '../types';
-import {
-  MIN_FILL_LUMINANCE,
-  DARK_FILL_BOOST,
-  NOISE_NEIGHBOR_THRESHOLD,
-  PALETTE_SAMPLE_STEP,
-  PALETTE_K_MEANS_K,
-  PALETTE_K_MEANS_MAX_ITERATIONS,
-  PALETTE_BLACK_THRESHOLD,
-  PALETTE_WHITE_THRESHOLD
-} from '../constants';
+// Settings interface for partial overrides
+export interface ImageProcessingSettings {
+  grayOutlineThreshold?: number;
+  minFillLuminance?: number;
+  darkFillBoost?: number;
+  noiseNeighborThreshold?: number;
+  paletteSampleStep?: number;
+  paletteKMeansK?: number;
+  paletteKMeansMaxIterations?: number;
+  paletteBlackThreshold?: number;
+  paletteWhiteThreshold?: number;
+}
 
 /**
  * ARCHITECTURE IMPLEMENTATION: cv_and_vectorization.validation_checks
@@ -19,11 +22,12 @@ import {
  * 2. Fills are not too dark (Luminance > 30%)
  * 3. Noise is reduced
  */
-export function validateAndFixFrame(imageData: ImageData): ImageData {
+export function validateAndFixFrame(imageData: ImageData, settings?: ImageProcessingSettings): ImageData {
   const data = imageData.data;
   
-  // Contrast enhancement - stretch dark grays to pure black
-  const GRAY_OUTLINE_THRESHOLD = 120;
+  const grayOutlineThreshold = settings?.grayOutlineThreshold ?? DEFAULT_SETTINGS.grayOutlineThreshold;
+  const minFillLuminance = settings?.minFillLuminance ?? DEFAULT_SETTINGS.minFillLuminance;
+  const darkFillBoost = settings?.darkFillBoost ?? DEFAULT_SETTINGS.darkFillBoost;
   
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i];
@@ -34,16 +38,16 @@ export function validateAndFixFrame(imageData: ImageData): ImageData {
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
     
     // Enhanced outline detection: catch dark grays as outlines
-    if (lum < GRAY_OUTLINE_THRESHOLD) {
+    if (lum < grayOutlineThreshold) {
        // Force to Pure Black for downstream processing
        data[i] = 0;
        data[i + 1] = 0;
        data[i + 2] = 0;
-    } else if (lum < MIN_FILL_LUMINANCE) {
+    } else if (lum < minFillLuminance) {
        // Mid-range: lighten to avoid confusion with outlines
-       data[i] = Math.min(255, r + DARK_FILL_BOOST);
-       data[i + 1] = Math.min(255, g + DARK_FILL_BOOST);
-       data[i + 2] = Math.min(255, b + DARK_FILL_BOOST);
+       data[i] = Math.min(255, r + darkFillBoost);
+       data[i + 1] = Math.min(255, g + darkFillBoost);
+       data[i + 2] = Math.min(255, b + darkFillBoost);
     }
     // Bright pixels stay unchanged
   }
@@ -77,11 +81,13 @@ export function binarizeImageData(imageData: ImageData, threshold: number = 20):
  * Removes "salt and pepper" noise from the binary image.
  * Flips isolated black pixels to white and isolated white pixels to black.
  */
-export function cleanupArtifacts(imageData: ImageData): ImageData {
+export function cleanupArtifacts(imageData: ImageData, settings?: ImageProcessingSettings): ImageData {
   const w = imageData.width;
   const h = imageData.height;
   const data = imageData.data;
   const copy = new Uint8ClampedArray(data); 
+  
+  const noiseNeighborThreshold = settings?.noiseNeighborThreshold ?? DEFAULT_SETTINGS.noiseNeighborThreshold;
   
   const getVal = (x: number, y: number) => {
       if (x < 0 || y < 0 || x >= w || y >= h) return 255; 
@@ -101,7 +107,7 @@ export function cleanupArtifacts(imageData: ImageData): ImageData {
               }
           }
           
-          if (neighbors < NOISE_NEIGHBOR_THRESHOLD) {
+          if (neighbors < noiseNeighborThreshold) {
               const newVal = val === 0 ? 255 : 0;
               data[idx] = newVal;
               data[idx+1] = newVal;
@@ -115,38 +121,43 @@ export function cleanupArtifacts(imageData: ImageData): ImageData {
 /**
  * Extracts a palette using K-Means Clustering.
  * Sorts by HSL Hue for better visual organization.
- * PERFORMANCE: Uses PALETTE_SAMPLE_STEP for reduced sampling (default 1/100th).
+ * PERFORMANCE: Uses paletteSampleStep for reduced sampling.
  */
-export function extractPalette(imageData: ImageData): Color[] {
+export function extractPalette(imageData: ImageData, settings?: ImageProcessingSettings): Color[] {
   const data = imageData.data;
   const pixels: number[][] = [];
   
+  const sampleStep = settings?.paletteSampleStep ?? DEFAULT_SETTINGS.paletteSampleStep;
+  const kMeansK = settings?.paletteKMeansK ?? DEFAULT_SETTINGS.paletteKMeansK;
+  const maxIterations = settings?.paletteKMeansMaxIterations ?? DEFAULT_SETTINGS.paletteKMeansMaxIterations;
+  const blackThreshold = settings?.paletteBlackThreshold ?? DEFAULT_SETTINGS.paletteBlackThreshold;
+  const whiteThreshold = settings?.paletteWhiteThreshold ?? DEFAULT_SETTINGS.paletteWhiteThreshold;
+  
   // 1. Sampling Step: Don't process every pixel for speed.
-  // Uses PALETTE_SAMPLE_STEP constant (1/100th of image is statistically sufficient)
-  for (let i = 0; i < data.length; i += 4 * PALETTE_SAMPLE_STEP) {
+  for (let i = 0; i < data.length; i += 4 * sampleStep) {
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
     
-    // Skip dark outlines and near-white backgrounds using constants
-    if (r < PALETTE_BLACK_THRESHOLD && g < PALETTE_BLACK_THRESHOLD && b < PALETTE_BLACK_THRESHOLD) continue;
-    if (r > PALETTE_WHITE_THRESHOLD && g > PALETTE_WHITE_THRESHOLD && b > PALETTE_WHITE_THRESHOLD) continue;
+    // Skip dark outlines and near-white backgrounds
+    if (r < blackThreshold && g < blackThreshold && b < blackThreshold) continue;
+    if (r > whiteThreshold && g > whiteThreshold && b > whiteThreshold) continue;
 
     pixels.push([r, g, b]);
   }
 
   if (pixels.length === 0) return [{ name: 'Blue', hex: '#3b82f6' }];
 
-  // 2. K-Means Algorithm with constants
+  // 2. K-Means Algorithm
   // Initialize centroids randomly
   let centroids: number[][] = [];
-  for (let i = 0; i < PALETTE_K_MEANS_K; i++) {
+  for (let i = 0; i < kMeansK; i++) {
      centroids.push(pixels[Math.floor(Math.random() * pixels.length)]);
   }
 
-  for (let iter = 0; iter < PALETTE_K_MEANS_MAX_ITERATIONS; iter++) {
+  for (let iter = 0; iter < maxIterations; iter++) {
       // Assignment step
-      const clusters: number[][][] = Array.from({ length: PALETTE_K_MEANS_K }, () => []);
+      const clusters: number[][][] = Array.from({ length: kMeansK }, () => []);
 
       // PERFORMANCE: Early exit for pixels if sample is large
       const pixelCount = pixels.length;
@@ -156,7 +167,7 @@ export function extractPalette(imageData: ImageData): Color[] {
           let bestK = 0;
           const p0 = p[0], p1 = p[1], p2 = p[2]; // Cache for performance
           
-          for (let j = 0; j < PALETTE_K_MEANS_K; j++) {
+          for (let j = 0; j < kMeansK; j++) {
               const c = centroids[j];
               // Inline squared distance calculation (avoid Math.pow for speed)
               const dr = p0 - c[0];
@@ -174,7 +185,7 @@ export function extractPalette(imageData: ImageData): Color[] {
       // Update step
       let changed = false;
       const newCentroids: number[][] = [];
-      for (let j = 0; j < PALETTE_K_MEANS_K; j++) {
+      for (let j = 0; j < kMeansK; j++) {
           const cluster = clusters[j];
           if (cluster.length === 0) {
               // If cluster empty, keep old centroid or re-init

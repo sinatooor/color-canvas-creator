@@ -25,12 +25,12 @@ export const outlineService = {
    * 4. Controlled Thickening (Dilate to target width based on settings)
    * 5. Vectorize (Output SVG)
    */
-  async generateLeakProofOutlines(imageData: ImageData, thickness: OutlineThickness = 'medium'): Promise<string> {
+  async generateLeakProofOutlines(imageData: ImageData, thickness: OutlineThickness = 'medium', settings?: OutlineSettings): Promise<string> {
     const width = imageData.width;
     const height = imageData.height;
 
     // Generate the master mask with specific thickness
-    const mask = computeCleanMask(imageData, thickness);
+    const mask = computeCleanMask(imageData, thickness, settings);
 
     // Convert Mask back to ImageData for Vectorizer
     // Must be strictly 0 (black) or 255 (white)
@@ -53,11 +53,11 @@ export const outlineService = {
    * Returns a repaired ImageData object for the Fill Engine (Label Map).
    * It uses the exact same mask logic as the outlines to ensure 1:1 registration.
    */
-  processAndRepairImage(imageData: ImageData, thickness: OutlineThickness = 'medium'): ImageData {
+  processAndRepairImage(imageData: ImageData, thickness: OutlineThickness = 'medium', settings?: OutlineSettings): ImageData {
       const width = imageData.width;
       const height = imageData.height;
       
-      const mask = computeCleanMask(imageData, thickness);
+      const mask = computeCleanMask(imageData, thickness, settings);
 
       const output = new ImageData(width, height);
       for (let i = 0; i < width * height; i++) {

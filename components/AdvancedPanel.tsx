@@ -1,6 +1,22 @@
 
 import React, { useState, useRef } from 'react';
-import { useAdvancedSettings, DEFAULT_SETTINGS } from '../stores/advancedSettings';
+import { useAdvancedSettings, DEFAULT_SETTINGS, SETTING_CATEGORIES, SettingCategory } from '../stores/advancedSettings';
+
+// Category badge component
+const CategoryBadge: React.FC<{ category: SettingCategory }> = ({ category }) => {
+  const config = {
+    api: { icon: '🔴', label: 'API', color: 'bg-red-100 text-red-700' },
+    reprocess: { icon: '🟠', label: 'Reprocess', color: 'bg-orange-100 text-orange-700' },
+    palette: { icon: '🟢', label: 'Palette', color: 'bg-green-100 text-green-700' },
+    live: { icon: '🔵', label: 'Live', color: 'bg-blue-100 text-blue-700' }
+  };
+  const c = config[category];
+  return (
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${c.color}`}>
+      {c.icon} {c.label}
+    </span>
+  );
+};
 
 interface SliderProps {
   label: string;
@@ -11,12 +27,16 @@ interface SliderProps {
   step?: number;
   onChange: (v: number) => void;
   defaultValue: number;
+  category: SettingCategory;
 }
 
-const Slider: React.FC<SliderProps> = ({ label, description, value, min, max, step = 1, onChange, defaultValue }) => (
+const Slider: React.FC<SliderProps> = ({ label, description, value, min, max, step = 1, onChange, defaultValue, category }) => (
   <div className="mb-4">
     <div className="flex justify-between items-center mb-1">
-      <label className="text-sm font-medium text-gray-700">{label}</label>
+      <div className="flex items-center gap-2">
+        <label className="text-sm font-medium text-gray-700">{label}</label>
+        <CategoryBadge category={category} />
+      </div>
       <div className="flex items-center gap-2">
         <span className="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded">{value}</span>
         {value !== defaultValue && (
@@ -52,9 +72,10 @@ interface SectionProps {
   icon: string;
   children: React.ReactNode;
   defaultOpen?: boolean;
+  badge?: React.ReactNode;
 }
 
-const Section: React.FC<SectionProps> = ({ title, icon, children, defaultOpen = false }) => {
+const Section: React.FC<SectionProps> = ({ title, icon, children, defaultOpen = false, badge }) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   
   return (
@@ -66,6 +87,7 @@ const Section: React.FC<SectionProps> = ({ title, icon, children, defaultOpen = 
         <div className="flex items-center gap-2">
           <i className={`fa-solid ${icon} text-indigo-500`}></i>
           <span className="font-semibold text-gray-800">{title}</span>
+          {badge}
         </div>
         <i className={`fa-solid ${isOpen ? 'fa-chevron-up' : 'fa-chevron-down'} text-gray-400`}></i>
       </button>
@@ -74,18 +96,27 @@ const Section: React.FC<SectionProps> = ({ title, icon, children, defaultOpen = 
   );
 };
 
-const AdvancedPanel: React.FC = () => {
+interface AdvancedPanelProps {
+  onReprocess?: () => void;
+  isReprocessing?: boolean;
+}
+
+const AdvancedPanel: React.FC<AdvancedPanelProps> = ({ onReprocess, isReprocessing = false }) => {
   const { 
     settings, 
     updateSetting, 
     resetToDefaults, 
     exportSettings, 
     importSettings,
-    setIsAdvancedMode 
+    setIsAdvancedMode,
+    getRequiredRegenLevel,
+    clearChangedSettings
   } = useAdvancedSettings();
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activePromptTab, setActivePromptTab] = useState<'styles' | 'complexity' | 'lineart'>('styles');
+
+  const regenLevel = getRequiredRegenLevel();
 
   const handleExport = () => {
     const json = exportSettings();
@@ -114,8 +145,26 @@ const AdvancedPanel: React.FC = () => {
     reader.readAsText(file);
   };
 
+  const handleApply = () => {
+    if (onReprocess) {
+      onReprocess();
+      clearChangedSettings();
+    }
+  };
+
+  const getApplyButtonText = () => {
+    if (isReprocessing) return 'Processing...';
+    if (!regenLevel) return 'No Changes';
+    switch (regenLevel) {
+      case 'api': return '🔴 Regenerate (API)';
+      case 'reprocess': return '🟠 Apply & Reprocess';
+      case 'palette': return '🟢 Re-extract Palette';
+      case 'live': return '🔵 Apply (Instant)';
+    }
+  };
+
   return (
-    <div className="fixed inset-y-0 right-0 w-[400px] bg-white shadow-2xl z-50 flex flex-col animate-in slide-in-from-right duration-300">
+    <div className="fixed inset-y-0 right-0 w-[420px] bg-white shadow-2xl z-50 flex flex-col animate-in slide-in-from-right duration-300">
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-gradient-to-r from-indigo-500 to-purple-600">
         <div className="flex items-center gap-3">
@@ -133,9 +182,18 @@ const AdvancedPanel: React.FC = () => {
         </button>
       </div>
 
+      {/* Legend */}
+      <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 flex flex-wrap gap-2 text-[10px]">
+        <span className="text-gray-500 font-medium">Regen Level:</span>
+        <CategoryBadge category="api" />
+        <CategoryBadge category="reprocess" />
+        <CategoryBadge category="palette" />
+        <CategoryBadge category="live" />
+      </div>
+
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
-        <Section title="Outline Processing" icon="fa-pen-ruler" defaultOpen>
+        <Section title="Outline Processing" icon="fa-pen-ruler" defaultOpen badge={<CategoryBadge category="reprocess" />}>
           <Slider
             label="Wall Threshold"
             description="Pixels darker than this become walls. Higher = more sensitive to gray lines."
@@ -144,6 +202,7 @@ const AdvancedPanel: React.FC = () => {
             max={255}
             onChange={(v) => updateSetting('wallThreshold', v)}
             defaultValue={DEFAULT_SETTINGS.wallThreshold}
+            category={SETTING_CATEGORIES.wallThreshold}
           />
           <Slider
             label="Median Filter Threshold"
@@ -153,6 +212,7 @@ const AdvancedPanel: React.FC = () => {
             max={255}
             onChange={(v) => updateSetting('medianFilterThreshold', v)}
             defaultValue={DEFAULT_SETTINGS.medianFilterThreshold}
+            category={SETTING_CATEGORIES.medianFilterThreshold}
           />
           <Slider
             label="Despeckle Min Size"
@@ -162,6 +222,7 @@ const AdvancedPanel: React.FC = () => {
             max={500}
             onChange={(v) => updateSetting('despeckleMinSize', v)}
             defaultValue={DEFAULT_SETTINGS.despeckleMinSize}
+            category={SETTING_CATEGORIES.despeckleMinSize}
           />
           <Slider
             label="Gap Closing Radius"
@@ -171,10 +232,21 @@ const AdvancedPanel: React.FC = () => {
             max={5}
             onChange={(v) => updateSetting('gapClosingRadius', v)}
             defaultValue={DEFAULT_SETTINGS.gapClosingRadius}
+            category={SETTING_CATEGORIES.gapClosingRadius}
+          />
+          <Slider
+            label="Gray Outline Threshold"
+            description="Luminance below this is forced to pure black."
+            value={settings.grayOutlineThreshold}
+            min={0}
+            max={200}
+            onChange={(v) => updateSetting('grayOutlineThreshold', v)}
+            defaultValue={DEFAULT_SETTINGS.grayOutlineThreshold}
+            category={SETTING_CATEGORIES.grayOutlineThreshold}
           />
         </Section>
 
-        <Section title="Region Detection" icon="fa-vector-square">
+        <Section title="Region Detection" icon="fa-vector-square" badge={<CategoryBadge category="live" />}>
           <Slider
             label="Min Region Size for Hints"
             description="Regions smaller than this won't show number hints."
@@ -183,6 +255,7 @@ const AdvancedPanel: React.FC = () => {
             max={1000}
             onChange={(v) => updateSetting('minRegionSizeForHints', v)}
             defaultValue={DEFAULT_SETTINGS.minRegionSizeForHints}
+            category={SETTING_CATEGORIES.minRegionSizeForHints}
           />
           <Slider
             label="Noise Neighbor Threshold"
@@ -192,10 +265,11 @@ const AdvancedPanel: React.FC = () => {
             max={8}
             onChange={(v) => updateSetting('noiseNeighborThreshold', v)}
             defaultValue={DEFAULT_SETTINGS.noiseNeighborThreshold}
+            category={SETTING_CATEGORIES.noiseNeighborThreshold}
           />
         </Section>
 
-        <Section title="Palette Extraction" icon="fa-palette">
+        <Section title="Palette Extraction" icon="fa-palette" badge={<CategoryBadge category="palette" />}>
           <Slider
             label="Sample Step"
             description="Sampling interval. Higher = faster, lower accuracy."
@@ -204,6 +278,7 @@ const AdvancedPanel: React.FC = () => {
             max={50}
             onChange={(v) => updateSetting('paletteSampleStep', v)}
             defaultValue={DEFAULT_SETTINGS.paletteSampleStep}
+            category={SETTING_CATEGORIES.paletteSampleStep}
           />
           <Slider
             label="K-Means K"
@@ -213,6 +288,7 @@ const AdvancedPanel: React.FC = () => {
             max={48}
             onChange={(v) => updateSetting('paletteKMeansK', v)}
             defaultValue={DEFAULT_SETTINGS.paletteKMeansK}
+            category={SETTING_CATEGORIES.paletteKMeansK}
           />
           <Slider
             label="K-Means Max Iterations"
@@ -222,6 +298,7 @@ const AdvancedPanel: React.FC = () => {
             max={50}
             onChange={(v) => updateSetting('paletteKMeansMaxIterations', v)}
             defaultValue={DEFAULT_SETTINGS.paletteKMeansMaxIterations}
+            category={SETTING_CATEGORIES.paletteKMeansMaxIterations}
           />
           <Slider
             label="Black Threshold"
@@ -231,6 +308,7 @@ const AdvancedPanel: React.FC = () => {
             max={100}
             onChange={(v) => updateSetting('paletteBlackThreshold', v)}
             defaultValue={DEFAULT_SETTINGS.paletteBlackThreshold}
+            category={SETTING_CATEGORIES.paletteBlackThreshold}
           />
           <Slider
             label="White Threshold"
@@ -240,10 +318,11 @@ const AdvancedPanel: React.FC = () => {
             max={255}
             onChange={(v) => updateSetting('paletteWhiteThreshold', v)}
             defaultValue={DEFAULT_SETTINGS.paletteWhiteThreshold}
+            category={SETTING_CATEGORIES.paletteWhiteThreshold}
           />
         </Section>
 
-        <Section title="Color Processing" icon="fa-fill-drip">
+        <Section title="Color Processing" icon="fa-fill-drip" badge={<CategoryBadge category="reprocess" />}>
           <Slider
             label="Min Fill Luminance"
             description="Dark fills below this are lightened."
@@ -252,6 +331,7 @@ const AdvancedPanel: React.FC = () => {
             max={255}
             onChange={(v) => updateSetting('minFillLuminance', v)}
             defaultValue={DEFAULT_SETTINGS.minFillLuminance}
+            category={SETTING_CATEGORIES.minFillLuminance}
           />
           <Slider
             label="Dark Fill Boost"
@@ -261,19 +341,11 @@ const AdvancedPanel: React.FC = () => {
             max={100}
             onChange={(v) => updateSetting('darkFillBoost', v)}
             defaultValue={DEFAULT_SETTINGS.darkFillBoost}
-          />
-          <Slider
-            label="Gray Outline Threshold"
-            description="Luminance below this is treated as outline (forced to black)."
-            value={settings.grayOutlineThreshold}
-            min={0}
-            max={200}
-            onChange={(v) => updateSetting('grayOutlineThreshold', v)}
-            defaultValue={DEFAULT_SETTINGS.grayOutlineThreshold}
+            category={SETTING_CATEGORIES.darkFillBoost}
           />
         </Section>
 
-        <Section title="AI Prompts" icon="fa-robot">
+        <Section title="AI Prompts" icon="fa-robot" badge={<CategoryBadge category="api" />}>
           <div className="flex gap-1 mb-4">
             {(['styles', 'complexity', 'lineart'] as const).map((tab) => (
               <button
@@ -357,13 +429,35 @@ const AdvancedPanel: React.FC = () => {
 
       {/* Footer */}
       <div className="p-4 border-t border-gray-200 bg-gray-50">
+        {/* Apply Button - Primary action */}
+        <button
+          onClick={handleApply}
+          disabled={isReprocessing || !regenLevel}
+          className={`w-full py-3 px-4 rounded-xl font-bold transition-all mb-3 flex items-center justify-center gap-2 ${
+            isReprocessing
+              ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+              : !regenLevel
+              ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+              : regenLevel === 'api'
+              ? 'bg-red-500 hover:bg-red-600 text-white shadow-lg'
+              : regenLevel === 'reprocess'
+              ? 'bg-orange-500 hover:bg-orange-600 text-white shadow-lg'
+              : regenLevel === 'palette'
+              ? 'bg-green-500 hover:bg-green-600 text-white shadow-lg'
+              : 'bg-blue-500 hover:bg-blue-600 text-white shadow-lg'
+          }`}
+        >
+          {isReprocessing && <i className="fa-solid fa-spinner fa-spin"></i>}
+          {getApplyButtonText()}
+        </button>
+
         <div className="flex gap-2">
           <button
             onClick={resetToDefaults}
             className="flex-1 py-2 px-4 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg font-medium transition-colors"
           >
             <i className="fa-solid fa-rotate-left mr-2"></i>
-            Reset All
+            Reset
           </button>
           <button
             onClick={handleExport}
@@ -387,9 +481,6 @@ const AdvancedPanel: React.FC = () => {
           onChange={handleImport}
           className="hidden"
         />
-        <p className="text-xs text-gray-500 mt-3 text-center">
-          ⚠️ Changes affect processing. Some require re-generating the image.
-        </p>
       </div>
     </div>
   );
