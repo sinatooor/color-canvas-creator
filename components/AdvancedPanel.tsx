@@ -99,9 +99,16 @@ const Section: React.FC<SectionProps> = ({ title, icon, children, defaultOpen = 
 interface AdvancedPanelProps {
   onReprocess?: () => void;
   isReprocessing?: boolean;
+  onDirectImport?: (base64: string) => void;
+  isProcessingDirect?: boolean;
 }
 
-const AdvancedPanel: React.FC<AdvancedPanelProps> = ({ onReprocess, isReprocessing = false }) => {
+const AdvancedPanel: React.FC<AdvancedPanelProps> = ({ 
+  onReprocess, 
+  isReprocessing = false,
+  onDirectImport,
+  isProcessingDirect = false
+}) => {
   const { 
     settings, 
     updateSetting, 
@@ -114,7 +121,10 @@ const AdvancedPanel: React.FC<AdvancedPanelProps> = ({ onReprocess, isReprocessi
   } = useAdvancedSettings();
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const directImportRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const [activePromptTab, setActivePromptTab] = useState<'styles' | 'complexity' | 'lineart'>('styles');
+  const [showDirectCamera, setShowDirectCamera] = useState(false);
 
   const regenLevel = getRequiredRegenLevel();
 
@@ -143,6 +153,63 @@ const AdvancedPanel: React.FC<AdvancedPanelProps> = ({ onReprocess, isReprocessi
       }
     };
     reader.readAsText(file);
+  };
+
+  // Handle direct B&W import
+  const handleDirectImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !onDirectImport) return;
+    
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const base64 = ev.target?.result as string;
+      onDirectImport(base64);
+      setIsAdvancedMode(false);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Camera for direct import
+  const startDirectCamera = async () => {
+    setShowDirectCamera(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'environment' } 
+      });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (err) {
+      alert("Unable to access camera. Please check permissions.");
+      setShowDirectCamera(false);
+    }
+  };
+
+  const captureDirectPhoto = () => {
+    if (!videoRef.current || !onDirectImport) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(videoRef.current, 0, 0);
+    const base64 = canvas.toDataURL('image/png');
+    
+    // Stop camera
+    const stream = videoRef.current.srcObject as MediaStream;
+    stream?.getTracks().forEach(track => track.stop());
+    setShowDirectCamera(false);
+    
+    onDirectImport(base64);
+    setIsAdvancedMode(false);
+  };
+
+  const stopDirectCamera = () => {
+    if (videoRef.current?.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream?.getTracks().forEach(track => track.stop());
+    }
+    setShowDirectCamera(false);
   };
 
   const handleApply = () => {
@@ -191,9 +258,68 @@ const AdvancedPanel: React.FC<AdvancedPanelProps> = ({ onReprocess, isReprocessi
         <CategoryBadge category="live" />
       </div>
 
+      {/* Direct Camera Modal */}
+      {showDirectCamera && (
+        <div className="absolute inset-0 bg-black z-50 flex flex-col">
+          <video 
+            ref={videoRef} 
+            autoPlay 
+            playsInline 
+            className="flex-1 object-cover"
+          />
+          <div className="absolute bottom-0 left-0 right-0 p-6 flex justify-center gap-4">
+            <button
+              onClick={stopDirectCamera}
+              className="w-14 h-14 bg-white/20 hover:bg-white/30 text-white rounded-full flex items-center justify-center"
+            >
+              <i className="fa-solid fa-times text-xl"></i>
+            </button>
+            <button
+              onClick={captureDirectPhoto}
+              className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-lg"
+            >
+              <div className="w-16 h-16 bg-gray-200 rounded-full"></div>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
-        <Section title="Outline Processing" icon="fa-pen-ruler" defaultOpen badge={<CategoryBadge category="reprocess" />}>
+        {/* Import B&W Outline Section */}
+        <Section title="Import B&W Outline" icon="fa-camera" defaultOpen badge={<span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-bold">Skip AI</span>}>
+          <p className="text-xs text-gray-500 mb-3">
+            Skip AI generation — import an existing black & white outline from a physical coloring book.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => directImportRef.current?.click()}
+              disabled={isProcessingDirect}
+              className="flex-1 py-3 px-3 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded-xl font-bold transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              <i className="fa-solid fa-upload"></i> Upload
+            </button>
+            <button
+              onClick={startDirectCamera}
+              disabled={isProcessingDirect}
+              className="flex-1 py-3 px-3 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded-xl font-bold transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              <i className="fa-solid fa-camera"></i> Camera
+            </button>
+          </div>
+          <input
+            ref={directImportRef}
+            type="file"
+            accept="image/*"
+            onChange={handleDirectImportFile}
+            className="hidden"
+          />
+          <p className="text-[10px] text-gray-400 mt-2 text-center">
+            Works best with clean, high-contrast black outlines on white background.
+          </p>
+        </Section>
+
+        <Section title="Outline Processing" icon="fa-pen-ruler" badge={<CategoryBadge category="reprocess" />}>
           <Slider
             label="Wall Threshold"
             description="Pixels darker than this become walls. Higher = more sensitive to gray lines."
