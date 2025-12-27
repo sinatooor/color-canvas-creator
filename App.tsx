@@ -28,8 +28,9 @@ const AppContent: React.FC = () => {
   // --- Architecture: Separation of Concerns ---
   // The UI Layer (App.tsx) only handles View State. 
   // The Logic Layer (useJobProcessor) handles the AI/Image Pipeline.
-  const { activeJob, error: jobError, startJob, resetJob } = useJobProcessor();
-  const { isAdvancedMode, setIsAdvancedMode } = useAdvancedSettings();
+  const { activeJob, error: jobError, startJob, startDirectProcessingJob, resetJob } = useJobProcessor();
+  const { isAdvancedMode, setIsAdvancedMode, settings: advancedSettings } = useAdvancedSettings();
+  
 
   // --- State: Application Flow ---
   const [state, setState] = useState<AppState>('idle');
@@ -130,6 +131,23 @@ const AppContent: React.FC = () => {
       startJob(base64, genSettings, (bundle) => {
           loadBundleIntoEditor(bundle);
       });
+  };
+
+  // Handle direct B&W outline import (skips AI)
+  const handleDirectImport = (base64: string) => {
+      // Reset Editor State
+      setCurrentProjectId(null); 
+      setInitialStateUrl(undefined);
+      setCurrentTimelapse(undefined);
+      setCurrentRegionColors({});
+      setUiError(null);
+      setOutlineColor('#000000');
+
+      // Start Direct Pipeline (no AI)
+      setState('job_running');
+      startDirectProcessingJob(base64, genSettings.thickness, (bundle) => {
+          loadBundleIntoEditor(bundle);
+      }, advancedSettings);
   };
 
   const loadBundleIntoEditor = (bundle: ProjectBundle) => {
@@ -712,7 +730,12 @@ const AppContent: React.FC = () => {
       </button>
 
       {/* Advanced Panel */}
-      {isAdvancedMode && <AdvancedPanel />}
+      {isAdvancedMode && (
+        <AdvancedPanel 
+          onDirectImport={handleDirectImport}
+          isProcessingDirect={state === 'job_running'}
+        />
+      )}
     </div>
   );
 };
