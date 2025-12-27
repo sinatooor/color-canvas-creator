@@ -51,11 +51,11 @@ export const DEFAULT_SETTINGS: AdvancedSettings = {
   gapClosingRadius: 1,
   edgeBorderWidth: 2,
   
-  // SVG Vectorization
-  svgLineSmoothness: 0.5,
-  svgCurveSmoothness: 0.5,
+  // SVG Vectorization - use minimal smoothing to preserve all detail
+  svgLineSmoothness: 0.1,
+  svgCurveSmoothness: 0.1,
   svgPathOmit: 0,
-  svgRoundCoords: 1,
+  svgRoundCoords: 2,
   
   // Region Detection
   minRegionSizeForHints: 100,
