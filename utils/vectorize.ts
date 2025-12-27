@@ -127,16 +127,21 @@ export async function vectorizeImageData(
         const outlines = createNewSvg();
         let keptPaths = 0;
 
+        // Use a bolder default stroke so outlines remain visible at normal zoom.
+        const strokeWidth = 2;
+
         paths.forEach((p) => {
             const clone = outlines.doc.importNode(p, true) as SVGElement;
 
             // Force visible ink regardless of original fill.
             clone.setAttribute('fill', 'none');
-            clone.setAttribute('stroke', '#000000');
+            clone.setAttribute('stroke', '#0b0b0b');
             clone.setAttribute('stroke-opacity', '1');
-            clone.setAttribute('stroke-width', '1');
+            clone.setAttribute('stroke-width', String(strokeWidth));
             clone.setAttribute('stroke-linecap', 'round');
             clone.setAttribute('stroke-linejoin', 'round');
+            // Keep stroke width consistent when zooming the editor canvas
+            clone.setAttribute('vector-effect', 'non-scaling-stroke');
 
             outlines.svg.appendChild(clone);
             keptPaths++;
