@@ -7,7 +7,7 @@ import { computeColorBoundaries, renderColorBoundaries } from "../utils/boundary
 
 interface DrawingCanvasProps {
   regionData: RegionData;
-  outlinesUrl: string;
+  outlinesUrl: string; // SVG data URL for vector outlines
   initialStateUrl?: string;
   initialRegionColors?: Record<number, string>;
   coloredIllustrationUrl: string | null;
@@ -24,66 +24,11 @@ interface DrawingCanvasProps {
   height: number;
 }
 
-// Renders outlines directly from RegionData.labelMap (no SVG/image overlay).
-// Any pixel with regionId=0 is treated as an outline "wall".
-const hexToRgb = (hex: string): [number, number, number] => {
-  const h = hex.replace("#", "").trim();
-  if (h.length === 3) {
-    return [
-      parseInt(h[0] + h[0], 16),
-      parseInt(h[1] + h[1], 16),
-      parseInt(h[2] + h[2], 16),
-    ];
-  }
-  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
-};
-
-const renderOutlinesFromLabelMap = (params: {
-  ctx: CanvasRenderingContext2D;
-  regionData: RegionData;
-  width: number;
-  height: number;
-  colorHex: string;
-  thicknessPx: number;
-}) => {
-  const { ctx, regionData, width, height, colorHex, thicknessPx } = params;
-  const [r, g, b] = hexToRgb(colorHex);
-
-  ctx.clearRect(0, 0, width, height);
-
-  const out = new Uint8ClampedArray(width * height * 4);
-  const lm = regionData.labelMap;
-  const radius = Math.max(0, Math.min(3, Math.floor((thicknessPx - 1) / 2)));
-
-  for (let i = 0; i < lm.length; i++) {
-    if (lm[i] !== 0) continue;
-
-    const x = i % width;
-    const y = (i / width) | 0;
-
-    for (let dy = -radius; dy <= radius; dy++) {
-      const ny = y + dy;
-      if (ny < 0 || ny >= height) continue;
-
-      for (let dx = -radius; dx <= radius; dx++) {
-        const nx = x + dx;
-        if (nx < 0 || nx >= width) continue;
-        const j = (ny * width + nx) * 4;
-        out[j] = r;
-        out[j + 1] = g;
-        out[j + 2] = b;
-        out[j + 3] = 255;
-      }
-    }
-  }
-
-  const img = new ImageData(out, width, height);
-  ctx.putImageData(img, 0, 0);
-};
+// Outlines are now rendered as SVG for infinite zoom quality
 
 const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   regionData,
-  outlinesUrl: _outlinesUrl,
+  outlinesUrl, // SVG data URL - use directly for vector rendering
   coloredIllustrationUrl,
   initialRegionColors = {},
   selectedColor,
@@ -103,13 +48,12 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const contextRef = useRef<CanvasRenderingContext2D | null>(null);
   const hintsCanvasRef = useRef<HTMLCanvasElement>(null);
-  const outlinesCanvasRef = useRef<HTMLCanvasElement>(null);
   const colorBoundariesCanvasRef = useRef<HTMLCanvasElement>(null);
+  const svgOutlineRef = useRef<HTMLImageElement>(null);
 
-  // Outline rendering (derived from label map)
+  // Outline rendering - now uses SVG for infinite zoom quality
   const [outlinesEnabled, setOutlinesEnabled] = useState(true);
-  const [outlineThicknessPx, setOutlineThicknessPx] = useState(3);
-  const [outlinesReady, setOutlinesReady] = useState(false);
+  const [svgLoaded, setSvgLoaded] = useState(false);
 
   // Color boundaries rendering (between differently-colored regions)
   const [colorBoundariesEnabled, setColorBoundariesEnabled] = useState(true);
@@ -147,31 +91,12 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const lastPaintedRegionId = useRef<number>(-1);
   const strokeChangesRef = useRef<Record<number, string>>({});
 
-  // 0) Render outlines directly from the label map (no external assets)
+  // 0) SVG outlines load automatically via img tag - just track state
   useEffect(() => {
-    if (!outlinesCanvasRef.current) return;
-    if (!regionData || regionData.labelMap.length === 0) return;
-
-    const ctx = outlinesCanvasRef.current.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return;
-
-    if (!outlinesEnabled) {
-      ctx.clearRect(0, 0, width, height);
-      setOutlinesReady(false);
-      return;
+    if (!outlinesUrl) {
+      setSvgLoaded(false);
     }
-
-    renderOutlinesFromLabelMap({
-      ctx,
-      regionData,
-      width,
-      height,
-      colorHex: outlineColor,
-      thicknessPx: outlineThicknessPx,
-    });
-
-    setOutlinesReady(true);
-  }, [regionData, width, height, outlineColor, outlinesEnabled, outlineThicknessPx]);
+  }, [outlinesUrl]);
 
   // Render color boundaries between differently-colored regions
   useEffect(() => {
@@ -373,13 +298,13 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       ctx.drawImage(colorBoundariesCanvasRef.current, 0, 0);
     }
 
-    // Outline layer
-    if (outlinesCanvasRef.current && outlinesReady) {
-      ctx.drawImage(outlinesCanvasRef.current, 0, 0);
+    // Outline layer - draw SVG as image
+    if (svgOutlineRef.current && svgLoaded && outlinesEnabled) {
+      ctx.drawImage(svgOutlineRef.current, 0, 0, width, height);
     }
 
     return tempCanvas.toDataURL("image/png");
-  }, [width, height, outlinesReady, colorBoundariesEnabled]);
+  }, [width, height, svgLoaded, colorBoundariesEnabled, outlinesEnabled]);
 
   // Auto-Save
   useEffect(() => {
@@ -571,7 +496,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
         <div className="w-px h-6 bg-gray-300"></div>
 
-        {/* Outline controls */}
+        {/* Outline controls - simplified since SVG scales perfectly */}
         <div className="flex items-center gap-3">
           <button
             onClick={() => setOutlinesEnabled((v) => !v)}
@@ -583,18 +508,12 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             <i className={`fa-solid ${outlinesEnabled ? "fa-border-all" : "fa-square"}`}></i>
           </button>
 
-          <div className="flex items-center gap-2 text-sm text-gray-600">
-            <span className="font-bold">Lines</span>
-            <input
-              type="range"
-              min={1}
-              max={7}
-              value={outlineThicknessPx}
-              onChange={(e) => setOutlineThicknessPx(parseInt(e.target.value, 10))}
-              className="accent-gray-900"
-              title="Outline thickness"
-            />
-          </div>
+          <span className="text-sm font-bold text-gray-600">Outlines</span>
+          {outlinesEnabled && svgLoaded && (
+            <span className="text-xs text-green-600 flex items-center gap-1">
+              <i className="fa-solid fa-vector-square"></i> Vector
+            </span>
+          )}
         </div>
 
         <div className="w-px h-6 bg-gray-300"></div>
@@ -726,16 +645,22 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             }}
           />
 
-          {/* LAYER 4: Outline Canvas (RELIABLE - draws outlines directly) */}
-          <canvas
-            ref={outlinesCanvasRef}
-            width={width}
-            height={height}
-            className="absolute inset-0 z-20 pointer-events-none"
-            style={{
-              imageRendering: "auto",
-            }}
-          />
+          {/* LAYER 4: SVG Outline Layer (Vector - infinite zoom quality) */}
+          {outlinesUrl && outlinesEnabled && (
+            <img
+              ref={svgOutlineRef}
+              src={outlinesUrl}
+              alt="Outlines"
+              className="absolute inset-0 z-20 pointer-events-none"
+              style={{
+                width: '100%',
+                height: '100%',
+                imageRendering: 'auto',
+              }}
+              onLoad={() => setSvgLoaded(true)}
+              onError={() => setSvgLoaded(false)}
+            />
+          )}
 
           {/* LAYER 4: Reference Preview */}
           {coloredIllustrationUrl && showPreview && (
