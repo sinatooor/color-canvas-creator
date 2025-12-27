@@ -1,6 +1,6 @@
 // @ts-nocheck - Deno edge function runs in Deno runtime
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { GoogleGenAI } from "npm:@google/genai@^1.0.0";
+import { GoogleGenAI } from "https://esm.sh/@google/genai@1.0.0";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',

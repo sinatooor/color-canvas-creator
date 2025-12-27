@@ -78,7 +78,18 @@ const AppContent: React.FC = () => {
 
   useEffect(() => {
     checkApiKey();
-    checkUserSession();
+    
+    // Set up auth state listener
+    const { data: { subscription } } = storageService.onAuthStateChange((authUser) => {
+      setUser(authUser);
+    });
+    
+    // Check for existing session
+    storageService.getCurrentUser().then((currentUser) => {
+      if (currentUser) setUser(currentUser);
+    });
+    
+    return () => subscription.unsubscribe();
   }, []);
 
   // Sync Job Error to UI Error
@@ -100,11 +111,6 @@ const AppContent: React.FC = () => {
     } else {
       setHasApiKey(true); 
     }
-  };
-
-  const checkUserSession = async () => {
-    const currentUser = await storageService.getCurrentUser();
-    if (currentUser) setUser(currentUser);
   };
 
   const handleSelectKey = async () => {
