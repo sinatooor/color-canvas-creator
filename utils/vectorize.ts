@@ -113,68 +113,40 @@ export async function vectorizeImageData(
 
         const createNewSvg = () => {
             const newDoc = document.implementation.createDocument('http://www.w3.org/2000/svg', 'svg', null);
-            const svg = newDoc.documentElement; 
+            const svg = newDoc.documentElement;
             svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
             svg.setAttribute('width', `${width}`);
             svg.setAttribute('height', `${height}`);
             // Ensure SVG doesn't capture clicks, letting them fall through to canvas
-            svg.setAttribute('style', 'pointer-events: none;'); 
+            svg.setAttribute('style', 'pointer-events: none;');
             return { doc: newDoc, svg };
         };
 
+        // Build an outline-only SVG by stroking every traced path.
+        // This avoids "white on white" failures when ImageTracer outputs unexpected fill colors.
         const outlines = createNewSvg();
         let keptPaths = 0;
 
-        // Helper: detect if color is dark (ImageTracer outputs fill-based paths)
-        // More permissive threshold to catch gray outlines too
-        const isDarkColor = (colorStr: string): boolean => {
-            if (!colorStr) return true;
-            const c = colorStr.toLowerCase().trim();
-            if (c === 'black') return true;
-            if (c === 'white' || c === 'none' || c === 'transparent') return false;
-            
-            let r = 255, g = 255, b = 255;
-            if (c.startsWith('rgb')) {
-                const rgb = c.match(/\d+/g);
-                if (rgb && rgb.length >= 3) {
-                    r = parseInt(rgb[0]); g = parseInt(rgb[1]); b = parseInt(rgb[2]);
-                }
-            } else if (c.startsWith('#')) {
-                const hex = c.replace('#', '');
-                if (hex.length === 6) {
-                    r = parseInt(hex.substring(0, 2), 16);
-                    g = parseInt(hex.substring(2, 4), 16);
-                    b = parseInt(hex.substring(4, 6), 16);
-                } else if (hex.length === 3) {
-                    r = parseInt(hex[0] + hex[0], 16);
-                    g = parseInt(hex[1] + hex[1], 16);
-                    b = parseInt(hex[2] + hex[2], 16);
-                }
-            }
-            // More permissive: anything below 220 average is considered "dark enough"
-            return (r + g + b) / 3 < 220;
-        };
+        paths.forEach((p) => {
+            const clone = outlines.doc.importNode(p, true) as SVGElement;
 
-        paths.forEach(p => {
-            const fill = p.getAttribute('fill') || (p as any).style?.fill || 'rgb(0,0,0)';
-            
-            if (isDarkColor(fill)) {
-                const clone = outlines.doc.importNode(p, true) as SVGElement;
-                // ImageTracer outputs fill-based paths only
-                clone.setAttribute('fill', '#000000');
-                clone.setAttribute('fill-opacity', '1');
-                clone.setAttribute('stroke', 'none');
-                outlines.svg.appendChild(clone);
-                keptPaths++;
-            }
+            // Force visible ink regardless of original fill.
+            clone.setAttribute('fill', 'none');
+            clone.setAttribute('stroke', '#000000');
+            clone.setAttribute('stroke-opacity', '1');
+            clone.setAttribute('stroke-width', '1');
+            clone.setAttribute('stroke-linecap', 'round');
+            clone.setAttribute('stroke-linejoin', 'round');
+
+            outlines.svg.appendChild(clone);
+            keptPaths++;
         });
 
-        // If we somehow filtered everything out, fall back to the raw traced SVG.
-        // This prevents the editor from showing a blank canvas.
+        // If for some reason we got zero paths, fall back to the raw traced SVG.
         const s = new XMLSerializer();
         const outputSvg = keptPaths > 0 ? s.serializeToString(outlines.doc) : svgStr;
         if (keptPaths === 0) {
-            console.warn('vectorizeImageData: no dark paths detected; returning unfiltered SVG');
+            console.warn('vectorizeImageData: no paths detected; returning unfiltered SVG');
         }
 
         const toBase64 = (str: string) => window.btoa(unescape(encodeURIComponent(str)));
