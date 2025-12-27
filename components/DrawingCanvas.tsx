@@ -60,6 +60,13 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const [colorBoundaryThickness, setColorBoundaryThickness] = useState(2);
   const [colorBoundaryColor, setColorBoundaryColor] = useState("#333333");
 
+  // Show all region numbers when zoomed in
+  const [showAllNumbers, setShowAllNumbers] = useState(true);
+  
+  // Guided mode - blocks wrong color placement
+  const [guidedMode, setGuidedMode] = useState(false);
+  const [wrongColorFlash, setWrongColorFlash] = useState<{ x: number; y: number; id: number } | null>(null);
+
   // Engine State
   const runsRef = useRef<Map<number, ScanlineRun[]> | null>(null);
   const hintsRef = useRef<RegionHint[]>([]);
@@ -196,7 +203,7 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEngineReady, width, height]);
 
-  // 4. Smart Hints Layer ("Zen Mode")
+  // 4. Smart Hints Layer - shows color numbers on regions
   useLayoutEffect(() => {
     const cvs = hintsCanvasRef.current;
     if (!cvs || !isEngineReady) return;
@@ -205,33 +212,64 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     ctx.clearRect(0, 0, width, height);
 
-    // Only show hints if zoomed in slightly (performance)
-    if (transform.scale < 0.5) return;
+    // Only show hints if zoomed in enough (performance)
+    if (transform.scale < 0.8) return;
 
     const hints = hintsRef.current;
-    ctx.font = 'bold 16px "Outfit", sans-serif';
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
 
     hints.forEach((hint) => {
+      // Skip already colored regions
       if (regionColors[hint.regionId]) return;
 
       const isMatchingColor = palette[hint.paletteIndex]?.hex === selectedColor;
-      if (isMatchingColor) {
+      const colorNum = (hint.paletteIndex + 1).toString();
+      
+      // Calculate font size based on zoom level
+      const baseFontSize = Math.max(10, Math.min(16, 12 / transform.scale));
+      const circleRadius = baseFontSize * 0.9;
+
+      if (showAllNumbers) {
+        // Show all numbers when zoomed in
+        ctx.beginPath();
+        ctx.arc(hint.x, hint.y, circleRadius, 0, Math.PI * 2);
+        
+        if (isMatchingColor) {
+          // Highlight matching color
+          ctx.fillStyle = selectedColor;
+          ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = "#fff";
+          ctx.stroke();
+          ctx.fillStyle = "#ffffff";
+        } else {
+          // Show other numbers with subtle background
+          ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+          ctx.fill();
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = "rgba(0, 0, 0, 0.3)";
+          ctx.stroke();
+          ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+        }
+        
+        ctx.font = `bold ${baseFontSize}px "Outfit", sans-serif`;
+        ctx.fillText(colorNum, hint.x, hint.y);
+      } else if (isMatchingColor) {
+        // Only show matching color (original behavior)
         ctx.beginPath();
         ctx.arc(hint.x, hint.y, 14, 0, Math.PI * 2);
         ctx.fillStyle = selectedColor;
         ctx.fill();
-
         ctx.lineWidth = 2;
         ctx.strokeStyle = "#fff";
         ctx.stroke();
-
         ctx.fillStyle = "#ffffff";
-        ctx.fillText((hint.paletteIndex + 1).toString(), hint.x, hint.y);
+        ctx.font = 'bold 16px "Outfit", sans-serif';
+        ctx.fillText(colorNum, hint.x, hint.y);
       }
     });
-  }, [transform.scale, regionColors, selectedColor, isEngineReady, width, height, palette]);
+  }, [transform.scale, regionColors, selectedColor, isEngineReady, width, height, palette, showAllNumbers]);
 
   const paintRegion = useCallback((ctx: CanvasRenderingContext2D, regionId: number, color: string) => {
     if (!runsRef.current) return;
@@ -335,6 +373,28 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     const ctx = contextRef.current;
     if (!ctx) return;
+
+    // Guided mode: check if this is the correct color for this region
+    if (guidedMode && !isEraser) {
+      const hint = hintsRef.current.find(h => h.regionId === regionId);
+      if (hint) {
+        const expectedColor = palette[hint.paletteIndex]?.hex;
+        if (expectedColor && expectedColor.toLowerCase() !== selectedColor.toLowerCase()) {
+          // Wrong color! Show flash feedback and block
+          const rect = containerRef.current?.getBoundingClientRect();
+          if (rect) {
+            setWrongColorFlash({
+              x: clientX - rect.left,
+              y: clientY - rect.top,
+              id: Date.now()
+            });
+            setTimeout(() => setWrongColorFlash(null), 500);
+          }
+          soundEngine.playPop(); // Could add an error sound here
+          return; // Block the paint
+        }
+      }
+    }
 
     if (isEraser) {
       ctx.globalCompositeOperation = "destination-out";
@@ -554,6 +614,41 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
         <div className="w-px h-6 bg-gray-300"></div>
 
+        {/* Show Numbers toggle */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowAllNumbers((v) => !v)}
+            className={`w-8 h-8 rounded-full transition-all flex items-center justify-center ${
+              showAllNumbers ? "bg-blue-500 text-white shadow-md" : "hover:bg-gray-100 text-gray-500"
+            }`}
+            title={showAllNumbers ? "Hide region numbers" : "Show region numbers"}
+          >
+            <i className={`fa-solid ${showAllNumbers ? "fa-hashtag" : "fa-eye-slash"}`}></i>
+          </button>
+          <span className="text-sm font-bold text-gray-600">Numbers</span>
+        </div>
+
+        <div className="w-px h-6 bg-gray-300"></div>
+
+        {/* Guided Mode toggle */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setGuidedMode((v) => !v)}
+            className={`w-8 h-8 rounded-full transition-all flex items-center justify-center ${
+              guidedMode ? "bg-red-500 text-white shadow-md" : "hover:bg-gray-100 text-gray-500"
+            }`}
+            title={guidedMode ? "Disable guided mode (allow any color)" : "Enable guided mode (blocks wrong colors)"}
+          >
+            <i className={`fa-solid ${guidedMode ? "fa-shield-halved" : "fa-shield"}`}></i>
+          </button>
+          <span className="text-sm font-bold text-gray-600">Guided</span>
+          {guidedMode && (
+            <span className="text-xs text-red-500 font-medium">ON</span>
+          )}
+        </div>
+
+        <div className="w-px h-6 bg-gray-300"></div>
+
         <div className="flex gap-2 text-gray-600 items-center">
           {coloredIllustrationUrl && (
             <>
@@ -689,6 +784,22 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             }}
           />
         ))}
+
+        {/* Wrong color flash indicator for guided mode */}
+        {wrongColorFlash && (
+          <div
+            className="absolute pointer-events-none z-50 flex items-center justify-center animate-pulse"
+            style={{
+              left: wrongColorFlash.x,
+              top: wrongColorFlash.y,
+              transform: "translate(-50%, -50%)",
+            }}
+          >
+            <div className="w-12 h-12 rounded-full bg-red-500/30 border-2 border-red-500 flex items-center justify-center">
+              <i className="fa-solid fa-xmark text-red-600 text-xl"></i>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Undo / Save Buttons */}
